@@ -1,14 +1,4 @@
-#!/usr/bin/env python
-# coding: utf-8
-
-# In[ ]:
-
-
-get_ipython().run_line_magic('pip', "uninstall --yes 'keras' 'matplotlib' 'scikit-learn' 'tensorflow'")
-
-
-# In[ ]:
-
+# %pip uninstall --yes 'keras' 'matplotlib' 'scikit-learn' 'tensorflow'
 
 import os
 import sys
@@ -41,9 +31,6 @@ set_env(
 )
 
 subprocess.run(['ls', '/kaggle/tmp/setup/tiktoken_encodings'])
-
-
-# In[ ]:
 
 
 os.environ['TRANSFORMERS_NO_TF'] = '1'
@@ -161,9 +148,6 @@ class CFG:
 set_seed(CFG.seed)
 
 
-# In[ ]:
-
-
 class AIMO3Template:
 
     def __init__(self):
@@ -187,9 +171,6 @@ class AIMO3Template:
         system_message = Message.from_role_and_content(Role.SYSTEM, system_content)
         user_message = Message.from_role_and_content(Role.USER, user_prompt)
         return [system_message, user_message]
-
-
-# In[ ]:
 
 
 class AIMO3Sandbox:
@@ -348,9 +329,6 @@ class AIMO3Sandbox:
         self.close()
 
 
-# In[ ]:
-
-
 class AIMO3Tool:
 
     def __init__(self, local_jupyter_timeout: float, tool_prompt: str, sandbox=None):
@@ -427,9 +405,6 @@ class AIMO3Tool:
                 output = f'[ERROR] {exc}'
 
         return [self._make_response(output, channel=message.channel)]
-
-
-# In[ ]:
 
 
 class AIMO3Solver:
@@ -1228,14 +1203,8 @@ class AIMO3Solver:
                     pass
 
 
-# In[ ]:
-
-
 if "solver" in globals(): del solver
 solver = AIMO3Solver(CFG)
-
-
-# In[ ]:
 
 
 def predict(id_: pl.DataFrame, question: pl.DataFrame, answer: Optional[pl.DataFrame] = None) -> pl.DataFrame:
@@ -1246,9 +1215,6 @@ def predict(id_: pl.DataFrame, question: pl.DataFrame, answer: Optional[pl.DataF
     gc.enable()
     gc.collect()
     return pl.DataFrame({'id': id_value, 'answer': final_answer})
-
-
-# In[ ]:
 
 
 inference_server = kaggle_evaluation.aimo_3_inference_server.AIMO3InferenceServer(predict)
