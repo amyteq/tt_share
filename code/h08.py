@@ -85,6 +85,8 @@ class CFG:
         'Use this tool to execute Python code. '
         'The environment is a stateful Jupyter notebook. '
         'You must use print() to output results.'
+        'Before using slicing/indexing, confirm the object type; do NOT slice dicts (d[:k] is invalid). '
+        'To preview a dict, use list(d.items())[:k] or dict(list(d.items())[:k]); to preview an iterable, use list(x)[:k].'
     )
 
     preference_prompt = (
@@ -101,12 +103,14 @@ class CFG:
         'You are about to solve a math problem. First produce a concise plan (5-8 bullets).\n'
         'The plan must mention: (i) key idea, (ii) what to brute force / scan, (iii) what to factor/divisibility-check,\n'
         '(iv) what to verify with Python. Do NOT solve the problem yet.'
+        'When mentioning Python checks, include how to inspect intermediate data safely (no dict slicing; use list(d.items())[:k]).'
     )
 
     summary_prompt = (
         'Summarize previous attempts (plans + outcomes) into a short guidance for the next attempt.\n'
         'Include: tried approaches, candidate answers seen, common failure modes, and what to try next.\n'
         'Keep it brief and actionable.'
+        'If Python errors occurred, name the error pattern and give the exact fix (e.g., dict preview via list(d.items())[:k]).'
     )
 
     served_model_name = 'gpt-oss'
@@ -1033,7 +1037,7 @@ class AIMO3Solver:
             final_log_content.append(f"**preference_prompt:**\n{self._format_markdown_content(self.cfg.preference_prompt)}\n\n")
 
             final_log_content.extend(summary_lines)
-            final_log_content.append("\n---\n")
+            # final_log_content.append("\n---\n")
 
             # 按 Attempt 顺序排序日志
             # 注意：如果 detailed_results 里没有 Log 字段 (比如被删了)，这里要防守一下
@@ -1043,7 +1047,7 @@ class AIMO3Solver:
                 log_content = res.get('Log', '')
                 if log_content:
                     final_log_content.append(log_content)
-                    final_log_content.append("\n---\n")
+                    # final_log_content.append("\n---\n")
 
             # 写入文件
             output_path = f"{problem_id}.md" 
