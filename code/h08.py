@@ -23,7 +23,10 @@ def set_env(input_archive, temp_dir):
         'trl', 
         'vllm', 
         'openai_harmony'
-    ], check=True)
+    ], 
+    stdout=subprocess.DEVNULL,
+    stderr=subprocess.DEVNULL,
+    check=True)
 
 set_env(
     input_archive='/kaggle/input/aimo-3-utils/wheels.tar.gz', 
@@ -47,6 +50,7 @@ import time
 import queue
 import threading
 import contextlib
+from collections import deque
 from typing import Optional
 from jupyter_client import KernelManager
 from collections import Counter, defaultdict
@@ -75,46 +79,64 @@ import kaggle_evaluation.aimo_3_inference_server
 
 class CFG:
 
-    system_prompt = (
-        'You are a world-class International Mathematical Olympiad (IMO) competitor. '
-        'The final answer must be a non-negative integer between 0 and 99999. '
-        'You must place the final integer answer inside \\boxed{}.'
-    )
-
-    tool_prompt = (
-        'Use this tool to execute Python code. '
-        'The environment is a stateful Jupyter notebook. '
-        'You must use print() to output results.'
-        'Before using slicing/indexing, confirm the object type; do NOT slice dicts (d[:k] is invalid). '
-        'To preview a dict, use list(d.items())[:k] or dict(list(d.items())[:k]); to preview an iterable, use list(x)[:k].'
-    )
-
-    preference_prompt = (
-        'You have access to `math`, `numpy` and `sympy` to solve the problem.'
-    )
-
-    attempts_mode = "parallel"
+    attempts_mode = "serial"
     serial_context_char_limit = 1400
     serial_plan_max_tokens = 200
     serial_summary_max_tokens = 220
     serial_aux_temperature = 0.2
 
+    system_prompt = (
+        'You are a world-class International Mathematical Olympiad (IMO) competitor. '
+        'The final answer must be a non-negative integer between 0 and 99999. '
+        'You must place the final integer answer inside \\boxed{}.'
+        'Use \\boxed{} exactly once at the very end (never for intermediate results).'
+        'If you cannot finish within time, output your best verified result anyway as \\boxed{N}.'
+    )
+
+    tool_prompt = (
+        'Use this tool to execute Python code. '
+        'The environment is a stateful Jupyter notebook. '
+        'You must use print() to output results. '
+        'Python safety: never compute huge integers directly. '
+        'ALWAYS use modular pow(a, e, mod) for big exponents; NEVER call pow(a, huge_e) without mod (or mod=None). '
+        'Use sympy.factorint(n) when divisors matter. '
+        'Complexity budget: keep each Python call fast (<~2 seconds); start with small bounds and scale up only if needed; '
+        'avoid large nested loops or wide scans—if a scan times out, reduce the bound or change the method (use modular/factorization/sieving). '
+        'Use explicit namespaces for number theory helpers (math.gcd/math.lcm or sympy.gcd); do not use bare gcd/lcm names. '
+        'Dict preview must use list(d.items())[:k] (never d[:k]).'
+    )
+
+    preference_prompt = (
+        'You have access to `math`, `numpy` and `sympy` to solve the problem.'
+        'Prefer verifiable approaches: reduce to modular arithmetic / factorization / small candidate sets. '
+        'If an argument depends on choosing the best among many integers, define a candidate set and a coverage strategy (prove a bound or do a bounded scan + verification).'
+    )
+
     plan_prompt = (
-        'You are about to solve a math problem. First produce a concise plan (5-8 bullets).\n'
-        'The plan must mention: (i) key idea, (ii) what to brute force / scan, (iii) what to factor/divisibility-check,\n'
-        '(iv) what to verify with Python. Do NOT solve the problem yet.'
-        'When mentioning Python checks, include how to inspect intermediate data safely (no dict slicing; use list(d.items())[:k]).'
+        'PLAN (bullets only, 5-8 items).\n'
+        'Goal: solve the problem and reach a final \\boxed{N}.\n'
+        'Include: (i) main idea, (ii) what to compute/scan (start small, expand only if needed, state bounds), '
+        '(iii) what to verify with Python (and how you will keep it fast).\n'
+        'Output ONLY the plan bullets.'
     )
 
     summary_prompt = (
-        'Summarize previous attempts (plans + outcomes) into a short guidance for the next attempt.\n'
-        'Include: tried approaches, candidate answers seen, common failure modes, and what to try next.\n'
-        'Keep it brief and actionable.'
-        'If Python errors occurred, name the error pattern and give the exact fix (e.g., dict preview via list(d.items())[:k]).'
+        'NEXT-ATTEMPT GUIDANCE (bullets only, 6-10 items).\n'
+        'Summarize what was tried and what to do next, using only task-focused guidance.\n'
+        'Must include:\n'
+        '- candidate answers seen so far (with counts if repeated),\n'
+        '- key intermediate results/claims that were verified (and which were not),\n'
+        '- the most common failure modes observed (e.g., definition/normalization mismatch, local optimum, Python timeout).\n'
+        'If Python errors/timeouts occurred, include the specific error pattern AND a strict next-attempt rule to prevent it '
+        '(e.g., never pow without mod; reduce bounds; avoid nested loops; use math.gcd explicitly; no dict slicing).\n'
+        'Do NOT output any final answer or \\boxed{} here.'
     )
 
     served_model_name = 'gpt-oss'
     model_path = '/kaggle/input/gpt-oss-120b/transformers/default/1'
+
+    # served_model_name = 'gpt-oss-sft'
+    # model_path = '/kaggle/input/gpt-oss-sft-aimo3/transformers/default/1'
 
     kv_cache_dtype = 'fp8_e4m3'
     dtype = 'auto'
@@ -144,6 +166,8 @@ class CFG:
     gpu_memory_utilization = 0.96
     temperature = 1.0
     min_p = 0.02
+    enable_error_penalty = True
+    error_penalty_lambda = 0.7
     debug = True
     debug_req = True
     debug_resp = True
@@ -616,6 +640,11 @@ class AIMO3Solver:
 
         return total_entropy / token_count
 
+    def _fmt_time(self, seconds: float) -> str:
+        s = int(round(max(0.0, seconds)))
+        m, s = divmod(s, 60)
+        return f"{m}:{s:02d}"
+
     def _get_debug_snippet(self, text: str) -> str:
         limit = self.cfg.debug_limit
         if len(text) <= limit:
@@ -757,15 +786,16 @@ class AIMO3Solver:
         attempt_index: int, 
         stop_event: threading.Event, 
         deadline: float,
+        problem_id: str,
         serial_summary: str = "",
         plan: str = "",
     ) -> dict:
         ## DEBUG
-        attempt_log = []
-        if self.cfg.debug:
-            attempt_log.append(f"## Attempt {attempt_index + 1}\n")
+        attempt_log = deque([])
+        attempt_start = time.time()
 
         if stop_event.is_set() or time.time() > deadline:
+            print(f"Problem: {problem_id} TIMEOUT!")
             return {
                 'Attempt': attempt_index + 1, 
                 'Answer': None, 
@@ -950,6 +980,11 @@ class AIMO3Solver:
                 self.sandbox_pool.put(sandbox)
 
         mean_entropy = self._compute_mean_entropy(logprobs_buffer)
+        attempt_elapsed = time.time() - attempt_start
+        attempt_time = self._fmt_time(attempt_elapsed)
+        if self.cfg.debug:
+            attempt_log.appendleft(f"Attempt spent time: **{attempt_time}**\n")
+            attempt_log.appendleft(f"## Attempt {attempt_index + 1}\n")
 
         return {
             'Attempt': attempt_index + 1, 
@@ -959,7 +994,8 @@ class AIMO3Solver:
             'Entropy': mean_entropy, 
             'Answer': final_answer,
             'Plan': plan,
-            'Log': "\n".join(attempt_log)
+            'Log': "\n".join(attempt_log),
+            'Time': attempt_time
         }
 
     def _select_answer(self, detailed_results: list) -> int:
@@ -969,9 +1005,12 @@ class AIMO3Solver:
         for result in detailed_results:
             answer = result['Answer']
             entropy = result['Entropy']
+            py_err = int(result.get('Python Errors', 0) or 0)
 
             if answer is not None:
                 weight = 1.0 / max(entropy, 1e-9)
+                if self.cfg.enable_error_penalty:
+                    weight *= 1.0 / (1.0 + self.cfg.error_penalty_lambda * py_err)
 
                 answer_weights[answer] += weight
                 answer_votes[answer] += 1
@@ -1013,7 +1052,7 @@ class AIMO3Solver:
         return vote_dataframe, final_answer
 
     ## DEUBG
-    def write_debug_logs(self, detailed_results: list, vote_dataframe: pd.DataFrame, problem: str, problem_id: str = "UNK"):
+    def write_debug_logs(self, detailed_results: list, vote_dataframe: pd.DataFrame, problem: str, problem_id: str = "UNK", problem_time: str = ""):
         if not self.cfg.debug: return
 
         try:
@@ -1031,13 +1070,17 @@ class AIMO3Solver:
 
             # 拼接所有内容：Header -> Summary -> 各个 Attempt 的详细日志
             final_log_content = [f"# Problem ID: {problem_id}\n"]
+            final_log_content.append(f"Problem spent time: **{problem_time}**\n\n")
             final_log_content.append(f"**Problem:**\n{self._format_markdown_content(problem)}\n")
-            final_log_content.append(f"**system_prompt:**\n{self._format_markdown_content(self.cfg.system_prompt)}\n\n")
-            final_log_content.append(f"**tool_prompt:**\n{self._format_markdown_content(self.cfg.tool_prompt)}\n\n")
-            final_log_content.append(f"**preference_prompt:**\n{self._format_markdown_content(self.cfg.preference_prompt)}\n\n")
+            final_log_content.append(f"**system_prompt:**\n{self._format_markdown_content(self.cfg.system_prompt)}\n")
+            final_log_content.append(f"**tool_prompt:**\n{self._format_markdown_content(self.cfg.tool_prompt)}\n")
+            final_log_content.append(f"**preference_prompt:**\n{self._format_markdown_content(self.cfg.preference_prompt)}\n")
+            final_log_content.append(f"**plan_prompt:**\n{self._format_markdown_content(self.cfg.plan_prompt)}\n")
+            final_log_content.append(f"**summary_prompt:**\n{self._format_markdown_content(self.cfg.summary_prompt)}\n")
+            final_log_content.append(f"attempts_mode: **{self.cfg.attempts_mode}**, served_model_name: **{self.cfg.served_model_name}**\n")
 
             final_log_content.extend(summary_lines)
-            # final_log_content.append("\n---\n")
+            final_log_content.append("\n===\n")
 
             # 按 Attempt 顺序排序日志
             # 注意：如果 detailed_results 里没有 Log 字段 (比如被删了)，这里要防守一下
@@ -1047,7 +1090,7 @@ class AIMO3Solver:
                 log_content = res.get('Log', '')
                 if log_content:
                     final_log_content.append(log_content)
-                    # final_log_content.append("\n---\n")
+                    final_log_content.append("\n===\n")
 
             # 写入文件
             output_path = f"{problem_id}.md" 
@@ -1060,6 +1103,7 @@ class AIMO3Solver:
 
     def solve_problem(self, problem: str, problem_id: str = "UNK") -> int:
         print(f'\nProblem: {problem}\n')
+        problem_start = time.time()
 
         user_input = f'{problem} {self.cfg.preference_prompt}'
 
@@ -1103,6 +1147,7 @@ class AIMO3Solver:
                     attempt_index,
                     stop_event,
                     deadline,
+                    problem_id,
                     serial_summary=serial_summary,
                     plan=plan,
                 )
@@ -1139,7 +1184,8 @@ class AIMO3Solver:
                         system_prompt, 
                         attempt_index, 
                         stop_event, 
-                        deadline
+                        deadline,
+                        problem_id
                     )
 
                     futures.append(future)
@@ -1180,13 +1226,15 @@ class AIMO3Solver:
             cols = [c for c in results_dataframe.columns if not c in ['Log', 'Plan']]
             display(results_dataframe[cols])
 
+        problem_elapsed = time.time() - problem_start
+        problem_time = self._fmt_time(problem_elapsed)
         if not valid_answers:
             print('\nResult: 0\n')
             vote_data, final_answer = pd.DataFrame(columns=['Answer', 'Votes', 'Score']), 0
         else:
             vote_data, final_answer = self._select_answer(detailed_results)
 
-        self.write_debug_logs(detailed_results, vote_data, problem, problem_id=problem_id)
+        self.write_debug_logs(detailed_results, vote_data, problem, problem_id, problem_time)
         return final_answer
 
     def __del__(self):
@@ -1229,7 +1277,10 @@ if os.getenv('KAGGLE_IS_COMPETITION_RERUN'):
 else:
     inference_server.run_local_gateway(
         # ('/kaggle/input/ai-mathematical-olympiad-progress-prize-3/test.csv',)
+        # ('/kaggle/input/ai-mathematical-olympiad-progress-prize-3/reference.csv',)
         # ('/kaggle/input/aimo-p3-hard/test2.csv',)
-        ('/kaggle/input/aimo-p3-hard/p10.csv',)
+        # ('/kaggle/input/aimo-p3-hard/test3.csv',)
+        ('/kaggle/input/aimo-p3-hard/p5.csv',)
+        # ('/kaggle/input/aimo-p3-hard/p10.csv',)
     )
 
