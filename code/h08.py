@@ -1,4 +1,8 @@
-# %pip uninstall --yes 'keras' 'matplotlib' 'scikit-learn' 'tensorflow'
+#!/usr/bin/env python
+# coding: utf-8
+
+get_ipython().run_line_magic('pip', "uninstall --yes 'keras' 'matplotlib' 'scikit-learn' 'tensorflow'")
+
 
 import os
 import sys
@@ -80,8 +84,8 @@ import kaggle_evaluation.aimo_3_inference_server
 class CFG:
 
     attempts_mode = "serial"
-    serial_context_char_limit = 1400
-    serial_plan_max_tokens = 200
+    serial_context_char_limit = 1536
+    serial_plan_max_tokens = 2048
     serial_aux_temperature = 0.2
 
     system_prompt = (
@@ -104,6 +108,11 @@ class CFG:
         '- avoid large nested loops or wide scans—if a scan times out, reduce the bound or change the method (use modular/factorization/sieving). \n'
         '- Use explicit namespaces for number theory helpers (math.gcd/math.lcm or sympy.gcd); do not use bare gcd/lcm names. \n'
         '- Dict preview must use list(d.items())[:k] (never d[:k]). \n'
+        'Timeout-avoidance rules:\n'
+        '- Batch work: do NOT call python repeatedly for small steps; write one cell that computes all needed values.\n'
+        '- Before any scan/loop: start with a tiny bound (<=200 or <=2000), time it, then expand by x2/x3 only if fast.\n'
+        '- If you see "[ERROR] Execution timed out", do NOT rerun the same code; shrink bounds or add caching.\n'
+        '- If computing many ratios/candidates, use caching and early-break; avoid list comprehensions calling expensive funcs.\n'
     )
 
     preference_prompt = (
@@ -114,22 +123,22 @@ class CFG:
 
     # --- NEW: planner (separate session) ---
     planner_system_prompt = (
-        "You are an expert IMO problem-solving PLANNER. "
-        "Your job is to produce a short plan to guide another solver. "
-        "Do NOT solve the problem. Do NOT output any final answer or \\boxed{}. "
-        "Do NOT write Python code. Output must be concise and actionable."
+        'You are an expert IMO problem-solving PLANNER. '
+        'Your job is to produce a short plan to guide another solver. '
+        'Do NOT solve the problem. Do NOT output any final answer or \\boxed{}. '
+        'Do NOT write Python code. Output must be concise and actionable.'
     )
 
     planner_prompt = (
-        "Return EXACTLY two sections:\n"
-        "PLAN:\n"
-        "- 5-8 bullet steps; include what to verify with Python and what small scans/bounds to use.\n"
-        "PLAN_DIGEST:\n"
-        "- 1 bullet, <= 140 characters, capturing the unique strategy of this attempt.\n"
+        'Return EXACTLY two sections:\n'
+        'PLAN:\n'
+        '- 5-8 bullet steps; include what to verify with Python and what small scans/bounds to use.\n'
+        'PLAN_DIGEST:\n'
+        '- 1 bullet, <= 256 characters, capturing the unique strategy of this attempt.\n'
         "Rules: no meta talk (no 'the user asks', no 'I will'), no \\boxed{}, no code."
     )
 
-    planner_digest_max_chars = 140
+    planner_digest_max_chars = 256
     planner_history_keep = 8
     planner_sanitize = True
 
@@ -150,7 +159,7 @@ class CFG:
     server_timeout = 180
 
     session_timeout = 960
-    jupyter_timeout = 6
+    jupyter_timeout = 10    # 6
     sandbox_timeout = 3
 
     stream_interval = 200
@@ -159,7 +168,7 @@ class CFG:
     search_tokens = 32
     top_logprobs = 5
     batch_size = 256
-    early_stop = 3
+    early_stop = 2
     attempts = 8
     workers = 16
     turns = 128
@@ -174,6 +183,7 @@ class CFG:
     debug_req = True
     debug_resp = True
     debug_limit = 3000
+    debug_cols = ['Log', 'Plan', 'PlanRaw', 'PlanSanitized', 'PlanDigest']
 
 set_seed(CFG.seed)
 
@@ -437,8 +447,92 @@ class AIMO3Tool:
         return [self._make_response(output, channel=message.channel)]
 
 
+class AIMO3Logger:
+    def __init__(self, cfg):
+        self.cfg = cfg
+
+    def get_debug_snippet(self, text: str) -> str:
+        limit = self.cfg.debug_limit
+        if not text or len(text) <= limit:
+            return text or ""
+        head = text[:100]
+        tail_len = limit - 100
+        tail = text[-tail_len:]
+        return f"{head}\n ... \n{tail}"
+
+    def format_markdown(self, text: str, mode: str = "quote") -> str:
+        if not text:
+            return ""
+        lines = text.split('\n')
+        escaped_lines = [f"\\{line}" if line.startswith('#') else line for line in lines]
+        processed_text = '\n'.join(escaped_lines)
+        if mode in ["markdown", "text", "python"]:
+            return f"```{mode}\n{processed_text}\n```\n"
+        if mode == "quote":
+            return '\n'.join([f"> {line}" for line in escaped_lines]) + "\n"
+        if mode == "":
+            return processed_text + "\n"
+        return f"```\n{processed_text}\n```\n"
+
+    def log_planner_block(self, plan_raw: str, plan_sanitized: str, plan_digest: str) -> str:
+        raw_snip = self.get_debug_snippet(plan_raw)
+        san_snip = self.get_debug_snippet(plan_sanitized)
+        digest = plan_digest.strip()
+
+        out = []
+        out.append("### Planner Output (raw)\n")
+        out.append(self.format_markdown(raw_snip, mode="text"))
+        out.append("### Planner Output (sanitized)\n")
+        out.append(self.format_markdown(san_snip, mode="text"))
+        out.append("### Plan Digest\n")
+        out.append(self.format_markdown(digest, mode="text"))
+        return "".join(out)
+
+    def write_debug_logs(self, detailed_results, vote_dataframe, problem, problem_id="UNK", problem_time=""):
+        if not self.cfg.debug:
+            return
+        try:
+            summary_lines = ["\n## Summary Stats\n"]
+            if detailed_results:
+                df = pd.DataFrame(detailed_results)
+                cols = [c for c in df.columns if c not in self.cfg.debug_cols]
+                summary_lines.append(df[cols].to_markdown(index=False))
+                summary_lines.append("\n\n")
+
+            if not vote_dataframe.empty:
+                summary_lines.append("## Vote Counts\n")
+                summary_lines.append(vote_dataframe.to_markdown(index=False))
+                summary_lines.append("\n")
+
+            final_log_content = [f"# Problem ID: {problem_id}\n"]
+            final_log_content.append(f"Problem spent time: **{problem_time}**\n\n")
+            final_log_content.append(f"**Problem:**\n{self.format_markdown(problem)}\n")
+            final_log_content.append(f"**system_prompt:**\n{self.format_markdown(self.cfg.system_prompt)}\n")
+            final_log_content.append(f"**tool_prompt:**\n{self.format_markdown(self.cfg.tool_prompt)}\n")
+            final_log_content.append(f"**preference_prompt:**\n{self.format_markdown(self.cfg.preference_prompt)}\n")
+            final_log_content.append(f"**planner_system_prompt:**\n{self.format_markdown(self.cfg.planner_system_prompt)}\n")
+            final_log_content.append(f"**planner_prompt:**\n{self.format_markdown(self.cfg.planner_prompt)}\n")
+            final_log_content.append(f"attempts_mode: **{self.cfg.attempts_mode}**, served_model_name: **{self.cfg.served_model_name}**\n")
+            final_log_content.extend(summary_lines)
+            final_log_content.append("\n===\n")
+
+            sorted_results = sorted(detailed_results, key=lambda x: x['Attempt'])
+            for res in sorted_results:
+                log_content = res.get('Log', '')
+                if log_content:
+                    final_log_content.append(log_content)
+                    final_log_content.append("\n===\n")
+
+            output_path = f"{problem_id}.md"
+            with open(output_path, "w", encoding="utf-8") as f:
+                f.write("".join(final_log_content))
+            print(f"Debug log written to {output_path}")
+        except Exception as e:
+            print(f"Failed to write debug log: {e}")
+
+
 class AIMO3Planner:
-    def __init__(self, cfg, template: AIMO3Template, client: OpenAI):
+    def __init__(self, cfg, template: AIMO3Template, client: OpenAI, logger: AIMO3Logger = None):
         self.cfg = cfg
         self.template = template
         self.client = client
@@ -508,7 +602,8 @@ class AIMO3Planner:
         conversation = Conversation.from_messages(messages)
 
         prompt_ids = self.encoding.render_conversation_for_completion(conversation, Role.ASSISTANT)
-        max_tokens = self.cfg.context_tokens - len(prompt_ids) - self.cfg.buffer_tokens
+        # max_tokens = self.cfg.context_tokens - len(prompt_ids) - self.cfg.buffer_tokens
+        max_tokens = self.cfg.serial_plan_max_tokens
         if max_tokens <= 0:
             return ""
 
@@ -540,7 +635,7 @@ class AIMO3Planner:
 
         return "".join(chunks).strip()
 
-    def gen_plan(self, problem_text: str, history: list[dict], attempt_index: int) -> tuple[str, str]:
+    def gen_plan(self, problem_text: str, history: list[dict], attempt_index: int) -> tuple[str, str, str]:
         prompt = (
             f"{self.cfg.planner_prompt}\n\n"
             f"PROBLEM:\n{problem_text}\n\n"
@@ -550,16 +645,21 @@ class AIMO3Planner:
 
         seed = int((self.cfg.seed + 777) * (attempt_index + 1) ** 2)
 
-        raw = self._gen_one_shot_text(
+        raw0 = self._gen_one_shot_text(
             prompt,
             seed=seed,
             max_new_tokens=self.cfg.serial_plan_max_tokens,
             system_prompt=self.cfg.planner_system_prompt,
             temperature=self.cfg.serial_aux_temperature,
         )
+        raw = raw0
 
         if self.cfg.planner_sanitize:
-            raw = self._sanitize(raw)
+            raw = self._sanitize(raw0)
+
+            # fallback: keep raw (trim) rather than empty
+            if not raw.strip():
+                raw = raw0[: self.cfg.serial_context_char_limit].strip()
 
         # parse sections
         plan_part = raw
@@ -595,7 +695,7 @@ class AIMO3Planner:
         if len(digest_line) > self.cfg.planner_digest_max_chars:
             digest_line = digest_line[: self.cfg.planner_digest_max_chars].strip()
 
-        return plan_part, digest_line
+        return plan_part, digest_line, raw0, raw
 
 
 class AIMO3Solver:
@@ -624,7 +724,8 @@ class AIMO3Solver:
 
         self.notebook_start_time = time.time()
         self.problems_remaining = 50
-        self.planner = AIMO3Planner(cfg, self.template, self.client)
+        self.logger = AIMO3Logger(cfg)
+        self.planner = AIMO3Planner(cfg, self.template, self.client, self.logger)
 
     def _preload_model_weights(self) -> None:
         print(f'Loading model weights from {self.cfg.model_path} into OS Page Cache...')
@@ -809,40 +910,6 @@ class AIMO3Solver:
         m, s = divmod(s, 60)
         return f"{m}:{s:02d}"
 
-    def _get_debug_snippet(self, text: str) -> str:
-        limit = self.cfg.debug_limit
-        if len(text) <= limit:
-            return text
-
-        head = text[:100]
-        tail_len = limit - 100
-        tail = text[-tail_len:]
-        return f"{head}\n ... \n{tail}"
-
-    def _format_markdown_content(self, text: str, mode: str = "quote") -> str:
-        """
-        handle text properly when writing it into markdown format debug logs
-        e.g. retain LaTex(MathJax), python etc. formats; avoid broken by leading #
-        """
-        if not text:
-            return ""
-
-        # 1. 处理 # 转义：遍历每一行，如果以 # 开头则 prepend \
-        lines = text.split('\n')
-        escaped_lines = [f"\\{line}" if line.startswith('#') else line for line in lines]
-        processed_text = '\n'.join(escaped_lines)
-
-        # 2. 根据模式进行包装
-        if mode in ["markdown", "text", "python"]:
-            return f"```{mode}\n{processed_text}\n```\n"
-        elif mode == "quote":
-            # 每行开头增加 "> "
-            return '\n'.join([f"> {line}" for line in escaped_lines]) + "\n"
-        elif mode == "":
-            return processed_text + "\n"
-        else:
-            return f"```\n{processed_text}\n```\n"
-
     def _process_attempt(
         self, 
         problem: str, 
@@ -852,6 +919,9 @@ class AIMO3Solver:
         deadline: float,
         problem_id: str,
         plan: str = "",
+        plan_digest: str = "",
+        plan_raw: str = "",
+        plan_sanitized: str = "",
     ) -> dict:
         ## DEBUG
         attempt_log = deque([])
@@ -895,7 +965,10 @@ class AIMO3Solver:
             if aug:
                 aug += "\nFollow the plan.\n"
             full_problem = problem + aug
-            attempt_log.append(f"\n**aug(plan)**: {aug}")
+            if self.cfg.debug and self.logger:
+                attempt_log.append(self.logger.log_planner_block(plan_raw, plan_sanitized, plan_digest))
+                attempt_log.append("### Planner Augmentation\n")
+                attempt_log.append(f"{self.logger.format_markdown(aug, mode='text')}\n")
 
             messages = self.template.apply_chat_template(
                 system_prompt,
@@ -921,8 +994,8 @@ class AIMO3Solver:
                     # which includes LLM special symbols like <|im_start|>
                     full_request_text = encoding.decode(prompt_ids)
 
-                    snippet = self._get_debug_snippet(full_request_text)
-                    formatted_req = self._format_markdown_content(snippet)
+                    snippet = self.logger.get_debug_snippet(full_request_text)
+                    formatted_req = self.logger.format_markdown(snippet)
                     attempt_log.append(f"### Turn {turn_i} - Raw Request to Model:")
                     attempt_log.append(formatted_req)
 
@@ -983,7 +1056,7 @@ class AIMO3Solver:
                 ## DEBUG
                 if self.cfg.debug and full_response_text:
                     attempt_log.append(f"### Turn {turn_i} - Model Response:")
-                    formatted_resp = self._format_markdown_content(full_response_text)
+                    formatted_resp = self.logger.format_markdown(full_response_text)
                     attempt_log.append(formatted_resp)
 
                 if final_answer is not None:
@@ -1013,8 +1086,8 @@ class AIMO3Solver:
                         attempt_log.append(f"```python\n{code_content}\n```\n")
 
                         attempt_log.append(f"### Turn {turn_i} - Python Output:")
-                        snippet_out = self._get_debug_snippet(response_text)
-                        formatted_out = self._format_markdown_content(snippet_out, mode="text")
+                        snippet_out = self.logger.get_debug_snippet(response_text)
+                        formatted_out = self.logger.format_markdown(snippet_out, mode="text")
                         attempt_log.append(f"{formatted_out}\n")
 
                     if response_text.startswith('[ERROR]') or 'Traceback' in response_text or 'Error:' in response_text:
@@ -1048,6 +1121,9 @@ class AIMO3Solver:
             'Entropy': mean_entropy, 
             'Answer': final_answer,
             'Plan': plan,
+            'PlanDigest': plan_digest,
+            'PlanRaw': plan_raw,
+            'PlanSanitized': plan_sanitized,
             'Log': "\n".join(attempt_log),
             'Time': attempt_time
         }
@@ -1105,56 +1181,6 @@ class AIMO3Solver:
         print(f'\nFinal Answer: {final_answer}\n')
         return vote_dataframe, final_answer
 
-    ## DEUBG
-    def write_debug_logs(self, detailed_results: list, vote_dataframe: pd.DataFrame, problem: str, problem_id: str = "UNK", problem_time: str = ""):
-        if not self.cfg.debug: return
-
-        try:
-            summary_lines = ["\n## Summary Stats\n"]
-            if detailed_results:
-                df = pd.DataFrame(detailed_results)
-                cols = [c for c in df.columns if not c in ['Log', 'Plan']]
-                summary_lines.append(df[cols].to_markdown(index=False))
-                summary_lines.append("\n\n")
-
-            if not vote_dataframe.empty:
-                summary_lines.append("## Vote Counts\n")
-                summary_lines.append(vote_dataframe.to_markdown(index=False))
-                summary_lines.append("\n")
-
-            # 拼接所有内容：Header -> Summary -> 各个 Attempt 的详细日志
-            final_log_content = [f"# Problem ID: {problem_id}\n"]
-            final_log_content.append(f"Problem spent time: **{problem_time}**\n\n")
-            final_log_content.append(f"**Problem:**\n{self._format_markdown_content(problem)}\n")
-            final_log_content.append(f"**system_prompt:**\n{self._format_markdown_content(self.cfg.system_prompt)}\n")
-            final_log_content.append(f"**tool_prompt:**\n{self._format_markdown_content(self.cfg.tool_prompt)}\n")
-            final_log_content.append(f"**preference_prompt:**\n{self._format_markdown_content(self.cfg.preference_prompt)}\n")
-            final_log_content.append(f"**planner_system_prompt:**\n{self._format_markdown_content(self.cfg.planner_system_prompt)}\n")
-            final_log_content.append(f"**planner_prompt:**\n{self._format_markdown_content(self.cfg.planner_prompt)}\n")
-            final_log_content.append(f"attempts_mode: **{self.cfg.attempts_mode}**, served_model_name: **{self.cfg.served_model_name}**\n")
-
-            final_log_content.extend(summary_lines)
-            final_log_content.append("\n===\n")
-
-            # 按 Attempt 顺序排序日志
-            # 注意：如果 detailed_results 里没有 Log 字段 (比如被删了)，这里要防守一下
-            # 但我们在 _process_attempt 里是保证返回 Log 的
-            sorted_results = sorted(detailed_results, key=lambda x: x['Attempt'])
-            for res in sorted_results:
-                log_content = res.get('Log', '')
-                if log_content:
-                    final_log_content.append(log_content)
-                    final_log_content.append("\n===\n")
-
-            # 写入文件
-            output_path = f"{problem_id}.md" 
-            with open(output_path, "w", encoding="utf-8") as f:
-                f.write("".join(final_log_content))
-            print(f"Debug log written to {output_path}")
-
-        except Exception as e:
-            print(f"Failed to write debug log: {e}")
-
     def solve_problem(self, problem: str, problem_id: str = "UNK") -> int:
         print(f'\nProblem: {problem}\n')
         problem_start = time.time()
@@ -1193,16 +1219,19 @@ class AIMO3Solver:
                 if time.time() > deadline:
                     break
 
-                plan, plan_digest = self.planner.gen_plan(problem_text=problem, history=planner_history, attempt_index=attempt_index)
+                plan, plan_digest, plan_raw, plan_san = self.planner.gen_plan(problem_text=problem, history=planner_history, attempt_index=attempt_index)
 
                 result = self._process_attempt(
-                    problem=problem,
+                    problem=user_input,
                     system_prompt=self.cfg.system_prompt,
                     attempt_index=attempt_index,
                     stop_event=stop_event,
                     deadline=deadline,
                     problem_id=problem_id,
-                    plan=plan,              # only plan is injected
+                    plan=plan,
+                    plan_digest=plan_digest,
+                    plan_raw=plan_raw,
+                    plan_sanitized=plan_san,
                 )
 
                 detailed_results.append(result)
@@ -1212,11 +1241,11 @@ class AIMO3Solver:
                 # update planner history (structured)
                 planner_history.append({
                     "Attempt": result.get("Attempt", attempt_index + 1),
-                    "PlanDigest": plan_digest,
                     "Answer": result.get("Answer"),
                     "Python Calls": result.get("Python Calls", 0),
                     "Python Errors": result.get("Python Errors", 0),
                     "Entropy": result.get("Entropy", float("inf")),
+                    "PlanDigest": plan_digest,
                 })
 
                 # early stop (same logic you already use)
@@ -1277,7 +1306,7 @@ class AIMO3Solver:
             results_dataframe['Entropy'] = results_dataframe['Entropy'].round(3)
             results_dataframe['Answer'] = results_dataframe['Answer'].astype('Int64')
 
-            cols = [c for c in results_dataframe.columns if not c in ['Log', 'Plan']]
+            cols = [c for c in results_dataframe.columns if not c in self.cfg.debug_cols]
             display(results_dataframe[cols])
 
         problem_elapsed = time.time() - problem_start
@@ -1288,7 +1317,7 @@ class AIMO3Solver:
         else:
             vote_data, final_answer = self._select_answer(detailed_results)
 
-        self.write_debug_logs(detailed_results, vote_data, problem, problem_id, problem_time)
+        self.logger.write_debug_logs(detailed_results, vote_data, problem, problem_id, problem_time)
         return final_answer
 
     def __del__(self):
@@ -1334,7 +1363,7 @@ else:
         # ('/kaggle/input/ai-mathematical-olympiad-progress-prize-3/reference.csv',)
         # ('/kaggle/input/aimo-p3-hard/test2.csv',)
         # ('/kaggle/input/aimo-p3-hard/test3.csv',)
-        ('/kaggle/input/aimo-p3-hard/p5.csv',)
-        # ('/kaggle/input/aimo-p3-hard/p10.csv',)
+        # ('/kaggle/input/aimo-p3-hard/p5.csv',)
+        ('/kaggle/input/aimo-p3-hard/p10.csv',)
     )
 
