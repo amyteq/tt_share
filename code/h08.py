@@ -82,7 +82,6 @@ class CFG:
     attempts_mode = "serial"
     serial_context_char_limit = 1400
     serial_plan_max_tokens = 200
-    serial_summary_max_tokens = 220
     serial_aux_temperature = 0.2
 
     system_prompt = (
@@ -97,13 +96,14 @@ class CFG:
         'Use this tool to execute Python code. '
         'The environment is a stateful Jupyter notebook. '
         'You must use print() to output results. '
-        'Python safety: never compute huge integers directly. '
-        'ALWAYS use modular pow(a, e, mod) for big exponents; NEVER call pow(a, huge_e) without mod (or mod=None). '
-        'Use sympy.factorint(n) when divisors matter. '
-        'Complexity budget: keep each Python call fast (<~2 seconds); start with small bounds and scale up only if needed; '
-        'avoid large nested loops or wide scans—if a scan times out, reduce the bound or change the method (use modular/factorization/sieving). '
-        'Use explicit namespaces for number theory helpers (math.gcd/math.lcm or sympy.gcd); do not use bare gcd/lcm names. '
-        'Dict preview must use list(d.items())[:k] (never d[:k]).'
+        'Python safety: \n'
+        '- never compute huge integers directly. \n'
+        '- ALWAYS use modular pow(a, e, mod) for big exponents; NEVER call pow(a, huge_e) without mod (or mod=None). Use sympy.factorint(n) when divisors matter. \n'
+        '- Never use while True (must have explicit bounds). \n'
+        '- Complexity budget: keep each Python call fast (<~2 seconds); start with small bounds and scale up only if needed; \n'
+        '- avoid large nested loops or wide scans—if a scan times out, reduce the bound or change the method (use modular/factorization/sieving). \n'
+        '- Use explicit namespaces for number theory helpers (math.gcd/math.lcm or sympy.gcd); do not use bare gcd/lcm names. \n'
+        '- Dict preview must use list(d.items())[:k] (never d[:k]). \n'
     )
 
     preference_prompt = (
@@ -112,29 +112,31 @@ class CFG:
         'If an argument depends on choosing the best among many integers, define a candidate set and a coverage strategy (prove a bound or do a bounded scan + verification).'
     )
 
-    plan_prompt = (
-        'PLAN (bullets only, 5-8 items).\n'
-        'Goal: solve the problem and reach a final \\boxed{N}.\n'
-        'Include: (i) main idea, (ii) what to compute/scan (start small, expand only if needed, state bounds), '
-        '(iii) what to verify with Python (and how you will keep it fast).\n'
-        'Output ONLY the plan bullets.'
+    # --- NEW: planner (separate session) ---
+    planner_system_prompt = (
+        "You are an expert IMO problem-solving PLANNER. "
+        "Your job is to produce a short plan to guide another solver. "
+        "Do NOT solve the problem. Do NOT output any final answer or \\boxed{}. "
+        "Do NOT write Python code. Output must be concise and actionable."
     )
 
-    summary_prompt = (
-        'NEXT-ATTEMPT GUIDANCE (bullets only, 6-10 items).\n'
-        'Summarize what was tried and what to do next, using only task-focused guidance.\n'
-        'Must include:\n'
-        '- candidate answers seen so far (with counts if repeated),\n'
-        '- key intermediate results/claims that were verified (and which were not),\n'
-        '- the most common failure modes observed (e.g., definition/normalization mismatch, local optimum, Python timeout).\n'
-        'If Python errors/timeouts occurred, include the specific error pattern AND a strict next-attempt rule to prevent it '
-        '(e.g., never pow without mod; reduce bounds; avoid nested loops; use math.gcd explicitly; no dict slicing).\n'
-        'Do NOT output any final answer or \\boxed{} here.'
+    planner_prompt = (
+        "Return EXACTLY two sections:\n"
+        "PLAN:\n"
+        "- 5-8 bullet steps; include what to verify with Python and what small scans/bounds to use.\n"
+        "PLAN_DIGEST:\n"
+        "- 1 bullet, <= 140 characters, capturing the unique strategy of this attempt.\n"
+        "Rules: no meta talk (no 'the user asks', no 'I will'), no \\boxed{}, no code."
     )
+
+    planner_digest_max_chars = 140
+    planner_history_keep = 8
+    planner_sanitize = True
 
     served_model_name = 'gpt-oss'
     model_path = '/kaggle/input/gpt-oss-120b/transformers/default/1'
 
+    # not working??!!
     # served_model_name = 'gpt-oss-sft'
     # model_path = '/kaggle/input/gpt-oss-sft-aimo3/transformers/default/1'
 
@@ -157,7 +159,7 @@ class CFG:
     search_tokens = 32
     top_logprobs = 5
     batch_size = 256
-    early_stop = 4
+    early_stop = 3
     attempts = 8
     workers = 16
     turns = 128
@@ -435,6 +437,167 @@ class AIMO3Tool:
         return [self._make_response(output, channel=message.channel)]
 
 
+class AIMO3Planner:
+    def __init__(self, cfg, template: AIMO3Template, client: OpenAI):
+        self.cfg = cfg
+        self.template = template
+        self.client = client
+        self.encoding = load_harmony_encoding(HarmonyEncodingName.HARMONY_GPT_OSS)
+        self.stop_token_ids = self.encoding.stop_tokens_for_assistant_actions()
+
+    def _sanitize(self, text: str) -> str:
+        if not text:
+            return ""
+        t = text.strip().replace("```", "")
+        lines = [ln.strip() for ln in t.splitlines() if ln.strip()]
+
+        bad = (
+            "the user asks", "user asks", "summarize", "output only",
+            "valid channels", "system_prompt", "tool_prompt", "preference_prompt",
+        )
+
+        out = []
+        for ln in lines:
+            low = ln.lower()
+            if any(b in low for b in bad):
+                continue
+            if "\\boxed" in ln or "boxed" in low:
+                continue
+            # keep only bullets / headers we expect
+            if low.startswith("plan:") or low.startswith("plan_digest:"):
+                out.append(ln)
+                continue
+            if re.match(r"^(\-|\*|•|\d+[\.\)])\s+", ln):
+                out.append(ln)
+                continue
+
+        return "\n".join(out).strip()
+
+    def _build_history_block(self, history: list[dict]) -> str:
+        # program-side structured history (stable, no prompt pollution)
+        if not history:
+            return "ATTEMPT HISTORY: (none)\n"
+
+        lines = ["ATTEMPT HISTORY (structured):"]
+        for r in history[-self.cfg.planner_history_keep:]:
+            digest = (r.get("PlanDigest") or "").replace("\n", " ").strip()
+            if len(digest) > self.cfg.planner_digest_max_chars:
+                digest = digest[: self.cfg.planner_digest_max_chars] + "..."
+            lines.append(
+                f"- Attempt {r.get('Attempt')}: "
+                f"Answer={r.get('Answer')}, Entropy={float(r.get('Entropy', 1e9)):.3f}, "
+                f"PyCalls={int(r.get('Python Calls', 0) or 0)}, PyErr={int(r.get('Python Errors', 0) or 0)}; "
+                f"PlanDigest={digest}"
+            )
+        return "\n".join(lines) + "\n"
+
+    def _gen_one_shot_text(
+        self,
+        user_text: str,
+        seed: int,
+        max_new_tokens: int,
+        system_prompt: str | None = None,
+        temperature: float | None = None,
+    ) -> str:
+        """single-turn generation (planner / summary etc). tools/sandbox disabled."""
+        sp = system_prompt or self.cfg.system_prompt
+        temp = self.cfg.serial_aux_temperature if temperature is None else float(temperature)
+        dummy_tool_cfg = ToolNamespaceConfig(name="python", description="", tools=[])
+
+        messages = self.template.apply_chat_template(sp, user_text, dummy_tool_cfg)
+        conversation = Conversation.from_messages(messages)
+
+        prompt_ids = self.encoding.render_conversation_for_completion(conversation, Role.ASSISTANT)
+        max_tokens = self.cfg.context_tokens - len(prompt_ids) - self.cfg.buffer_tokens
+        if max_tokens <= 0:
+            return ""
+
+        max_tokens = min(max_tokens, max_new_tokens)
+
+        stream = self.client.completions.create(
+            model=self.cfg.served_model_name,
+            temperature=temp,
+            logprobs=None,
+            max_tokens=max_tokens,
+            prompt=prompt_ids,
+            seed=seed,
+            stream=True,
+            extra_body={
+                "min_p": self.cfg.min_p,
+                "stop_token_ids": self.stop_token_ids,
+                "return_token_ids": True,
+            },
+        )
+
+        chunks = []
+        try:
+            for chunk in stream:
+                txt = chunk.choices[0].text
+                if txt:
+                    chunks.append(txt)
+        finally:
+            stream.close()
+
+        return "".join(chunks).strip()
+
+    def gen_plan(self, problem_text: str, history: list[dict], attempt_index: int) -> tuple[str, str]:
+        prompt = (
+            f"{self.cfg.planner_prompt}\n\n"
+            f"PROBLEM:\n{problem_text}\n\n"
+            f"{self._build_history_block(history)}\n"
+            f"Now produce PLAN and PLAN_DIGEST."
+        )
+
+        seed = int((self.cfg.seed + 777) * (attempt_index + 1) ** 2)
+
+        raw = self._gen_one_shot_text(
+            prompt,
+            seed=seed,
+            max_new_tokens=self.cfg.serial_plan_max_tokens,
+            system_prompt=self.cfg.planner_system_prompt,
+            temperature=self.cfg.serial_aux_temperature,
+        )
+
+        if self.cfg.planner_sanitize:
+            raw = self._sanitize(raw)
+
+        # parse sections
+        plan_part = raw
+        digest_part = ""
+        m = re.search(r"(?im)^\s*PLAN_DIGEST\s*:\s*$", raw)
+        if m:
+            plan_part = raw[: m.start()].strip()
+            digest_part = raw[m.end():].strip()
+
+        # remove PLAN: header if present
+        plan_part = re.sub(r"(?im)^\s*PLAN\s*:\s*$", "", plan_part).strip()
+
+        # keep plan short (avoid plan blow-up)
+        plan_part = plan_part[: self.cfg.serial_context_char_limit].strip()
+
+        # build digest fallback
+        digest_line = ""
+        if digest_part:
+            # first bullet line
+            for ln in digest_part.splitlines():
+                ln = ln.strip()
+                if ln.startswith(("-", "*", "•")):
+                    digest_line = ln.lstrip("-*• ").strip()
+                    break
+        if not digest_line:
+            # fallback: first plan bullet
+            for ln in plan_part.splitlines():
+                ln = ln.strip()
+                if ln.startswith(("-", "*", "•")):
+                    digest_line = ln.lstrip("-*• ").strip()
+                    break
+
+        if len(digest_line) > self.cfg.planner_digest_max_chars:
+            digest_line = digest_line[: self.cfg.planner_digest_max_chars].strip()
+
+        return plan_part, digest_line
+
+
 class AIMO3Solver:
 
     def __init__(self, cfg, port: int = 8000):
@@ -461,6 +624,7 @@ class AIMO3Solver:
 
         self.notebook_start_time = time.time()
         self.problems_remaining = 50
+        self.planner = AIMO3Planner(cfg, self.template, self.client)
 
     def _preload_model_weights(self) -> None:
         print(f'Loading model weights from {self.cfg.model_path} into OS Page Cache...')
@@ -679,106 +843,6 @@ class AIMO3Solver:
         else:
             return f"```\n{processed_text}\n```\n"
 
-    def _gen_one_shot_text(self, user_text: str, seed: int, max_new_tokens: int) -> str:
-        """
-        用同一个 vLLM server 做一次“单轮文本生成”（plan/summary 专用），尽量不触发工具。
-        返回拼接后的纯文本（可能包含少量前缀符号，调用处再strip/裁剪）。
-        """
-        # 不需要sandbox；只需要一个工具配置占位（tools=[]）
-        dummy_tool_cfg = ToolNamespaceConfig(name="python", description="", tools=[])
-
-        messages = self.template.apply_chat_template(
-            self.cfg.system_prompt,
-            user_text,
-            dummy_tool_cfg,
-        )
-        conversation = Conversation.from_messages(messages)
-
-        prompt_ids = self.encoding.render_conversation_for_completion(conversation, Role.ASSISTANT)
-        max_tokens = self.cfg.context_tokens - len(prompt_ids) - self.cfg.buffer_tokens
-        if max_tokens <= 0:
-            return ""
-
-        max_tokens = min(max_tokens, max_new_tokens)
-
-        stream = self.client.completions.create(
-            model=self.cfg.served_model_name,
-            temperature=self.cfg.serial_aux_temperature,
-            logprobs=None,
-            max_tokens=max_tokens,
-            prompt=prompt_ids,
-            seed=seed,
-            stream=True,
-            extra_body={
-                "min_p": self.cfg.min_p,
-                "stop_token_ids": self.stop_token_ids,
-                "return_token_ids": True,
-            },
-        )
-
-        chunks = []
-        try:
-            for chunk in stream:
-                txt = chunk.choices[0].text
-                if txt:
-                    chunks.append(txt)
-        finally:
-            stream.close()
-
-        return "".join(chunks).strip()
-
-    def _build_plan(self, problem_text: str, serial_summary: str, attempt_index: int) -> str:
-        prompt = (
-            f"{self.cfg.plan_prompt}\n\n"
-            f"PROBLEM:\n{problem_text}\n\n"
-        )
-        if serial_summary:
-            prompt += f"PREVIOUS SUMMARY:\n{serial_summary}\n\n"
-
-        prompt += "Output only the PLAN bullets.\n"
-
-        seed = int((self.cfg.seed + 17) * (attempt_index + 1) ** 2)
-        plan = self._gen_one_shot_text(prompt, seed=seed, max_new_tokens=self.cfg.serial_plan_max_tokens)
-
-        # 裁剪避免膨胀
-        return plan[: self.cfg.serial_context_char_limit].strip()
-
-    def _build_summary(self, history: list[dict]) -> str:
-        """
-        history: 每个元素至少含 Attempt/Plan/Answer/Python Calls/Python Errors/Entropy
-        """
-        if not history:
-            return ""
-
-        # 先做一个“结构化原始摘要”（确定性、可控）
-        lines = []
-        lines.append("ATTEMPT HISTORY (structured):")
-        for r in history[-8:]:  # 最多取最近8次，避免过长
-            a = r.get("Answer", None)
-            plan = (r.get("Plan") or "").replace("\n", " ").strip()
-            if len(plan) > 220:
-                plan = plan[:220] + "..."
-            lines.append(
-                f"- Attempt {r.get('Attempt')}: "
-                f"Answer={a}, Entropy={float(r.get('Entropy', float('inf'))):.3f}, "
-                f"PyCalls={int(r.get('Python Calls', 0) or 0)}, PyErr={int(r.get('Python Errors', 0) or 0)}; "
-                f"Plan={plan}"
-            )
-
-        raw = "\n".join(lines)
-        raw = raw[: self.cfg.serial_context_char_limit * 2]  # 给模型一点空间再压缩
-
-        # 再让模型按 summary_prompt 压缩成“下一次行动指南”
-        prompt = (
-            f"{self.cfg.summary_prompt}\n\n"
-            f"{raw}\n\n"
-            "Output a short NEXT-ATTEMPT GUIDANCE (bullets preferred)."
-        )
-        seed = int((self.cfg.seed + 97) * (len(history) + 1) ** 2)
-        summary = self._gen_one_shot_text(prompt, seed=seed, max_new_tokens=self.cfg.serial_summary_max_tokens)
-
-        return summary[: self.cfg.serial_context_char_limit].strip()
-
     def _process_attempt(
         self, 
         problem: str, 
@@ -787,7 +851,6 @@ class AIMO3Solver:
         stop_event: threading.Event, 
         deadline: float,
         problem_id: str,
-        serial_summary: str = "",
         plan: str = "",
     ) -> dict:
         ## DEBUG
@@ -819,33 +882,24 @@ class AIMO3Solver:
 
         try:
             sandbox = self.sandbox_pool.get(timeout=self.cfg.sandbox_timeout)
-
             local_tool = AIMO3Tool(
                 local_jupyter_timeout=self.cfg.jupyter_timeout, 
                 tool_prompt=self.cfg.tool_prompt, 
                 sandbox=sandbox
             )
-
             encoding = self.encoding
-            # messages = self.template.apply_chat_template(
-            #     system_prompt, 
-            #     problem, 
-            #     local_tool.tool_config
-            # )
 
             aug = ""
-            if serial_summary:
-                aug += f"\n\n=== PREVIOUS ATTEMPTS SUMMARY ===\n{serial_summary}\n"
             if plan:
                 aug += f"\n\n=== CURRENT ATTEMPT PLAN ===\n{plan}\n"
             if aug:
-                aug += "\nFollow the plan. Avoid repeating old failed approaches unless you strengthen verification/coverage.\n"
-
+                aug += "\nFollow the plan.\n"
             full_problem = problem + aug
+            attempt_log.append(f"\n**aug(plan)**: {aug}")
 
             messages = self.template.apply_chat_template(
                 system_prompt,
-                full_problem,
+                full_problem, # problem,
                 local_tool.tool_config
             )
 
@@ -863,14 +917,14 @@ class AIMO3Solver:
 
                 ## DEBUG
                 if self.cfg.debug and self.cfg.debug_req:
-                        # convert prompt_ids (tensors) back to readable text
-                        # which includes LLM special symbols like <|im_start|>
-                        full_request_text = encoding.decode(prompt_ids)
+                    # convert prompt_ids (tensors) back to readable text
+                    # which includes LLM special symbols like <|im_start|>
+                    full_request_text = encoding.decode(prompt_ids)
 
-                        snippet = self._get_debug_snippet(full_request_text)
-                        formatted_req = self._format_markdown_content(snippet)
-                        attempt_log.append(f"### Turn {turn_i} - Raw Request to Model:")
-                        attempt_log.append(formatted_req)
+                    snippet = self._get_debug_snippet(full_request_text)
+                    formatted_req = self._format_markdown_content(snippet)
+                    attempt_log.append(f"### Turn {turn_i} - Raw Request to Model:")
+                    attempt_log.append(formatted_req)
 
                 stream = self.client.completions.create(
                     model=self.cfg.served_model_name, 
@@ -1075,8 +1129,8 @@ class AIMO3Solver:
             final_log_content.append(f"**system_prompt:**\n{self._format_markdown_content(self.cfg.system_prompt)}\n")
             final_log_content.append(f"**tool_prompt:**\n{self._format_markdown_content(self.cfg.tool_prompt)}\n")
             final_log_content.append(f"**preference_prompt:**\n{self._format_markdown_content(self.cfg.preference_prompt)}\n")
-            final_log_content.append(f"**plan_prompt:**\n{self._format_markdown_content(self.cfg.plan_prompt)}\n")
-            final_log_content.append(f"**summary_prompt:**\n{self._format_markdown_content(self.cfg.summary_prompt)}\n")
+            final_log_content.append(f"**planner_system_prompt:**\n{self._format_markdown_content(self.cfg.planner_system_prompt)}\n")
+            final_log_content.append(f"**planner_prompt:**\n{self._format_markdown_content(self.cfg.planner_prompt)}\n")
             final_log_content.append(f"attempts_mode: **{self.cfg.attempts_mode}**, served_model_name: **{self.cfg.served_model_name}**\n")
 
             final_log_content.extend(summary_lines)
@@ -1127,49 +1181,49 @@ class AIMO3Solver:
 
         detailed_results = []
         valid_answers = []
-
         stop_event = threading.Event()
 
-        if self.cfg.attempts_mode.lower() in ["serial"]:
+        if self.cfg.attempts_mode == "serial":
             # ===== SERIAL MODE =====
-            serial_summary = ""
-            history = []
+
+            # program-side history ONLY for planner (stable, structured)
+            planner_history = []  # list of dicts with Attempt/PlanDigest/Answer/PyCalls/PyErr/Entropy
 
             for attempt_index in range(self.cfg.attempts):
-                if stop_event.is_set() or time.time() > deadline:
+                if time.time() > deadline:
                     break
 
-                plan = self._build_plan(problem_text=user_input, serial_summary=serial_summary, attempt_index=attempt_index)
+                plan, plan_digest = self.planner.gen_plan(problem_text=problem, history=planner_history, attempt_index=attempt_index)
 
                 result = self._process_attempt(
-                    user_input,
-                    self.cfg.system_prompt,
-                    attempt_index,
-                    stop_event,
-                    deadline,
-                    problem_id,
-                    serial_summary=serial_summary,
-                    plan=plan,
+                    problem=problem,
+                    system_prompt=self.cfg.system_prompt,
+                    attempt_index=attempt_index,
+                    stop_event=stop_event,
+                    deadline=deadline,
+                    problem_id=problem_id,
+                    plan=plan,              # only plan is injected
                 )
 
                 detailed_results.append(result)
-                history.append(result)
-
                 if result.get("Answer") is not None:
                     valid_answers.append(result["Answer"])
 
-                # early stop（沿用你原逻辑）
+                # update planner history (structured)
+                planner_history.append({
+                    "Attempt": result.get("Attempt", attempt_index + 1),
+                    "PlanDigest": plan_digest,
+                    "Answer": result.get("Answer"),
+                    "Python Calls": result.get("Python Calls", 0),
+                    "Python Errors": result.get("Python Errors", 0),
+                    "Entropy": result.get("Entropy", float("inf")),
+                })
+
+                # early stop (same logic you already use)
                 counts = Counter(valid_answers).most_common(1)
                 if counts and counts[0][1] >= self.cfg.early_stop:
-                    stop_event.set()
                     break
-
-                # 生成下一轮要喂的summary（把 plan+结果压缩）
-                serial_summary = self._build_summary(history)
-
-                # 轻量清理，避免串行累积（可选）
-                if attempt_index % 2 == 1:
-                    gc.collect()
+                # if attempt_index % 2 == 1: gc.collect()
         else:
             # ===== PARALLEL MODE (retained) =====
             executor = ThreadPoolExecutor(max_workers=self.cfg.workers)
