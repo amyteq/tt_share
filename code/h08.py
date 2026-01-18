@@ -1,8 +1,4 @@
-#!/usr/bin/env python
-# coding: utf-8
-
-get_ipython().run_line_magic('pip', "uninstall --yes 'keras' 'matplotlib' 'scikit-learn' 'tensorflow'")
-
+# %pip uninstall --yes 'keras' 'matplotlib' 'scikit-learn' 'tensorflow'
 
 import os
 import sys
@@ -55,7 +51,7 @@ import queue
 import threading
 import contextlib
 from collections import deque
-from typing import Optional
+from typing import Iterable, Optional
 from jupyter_client import KernelManager
 from collections import Counter, defaultdict
 from concurrent.futures import as_completed, ThreadPoolExecutor
@@ -85,7 +81,7 @@ class CFG:
 
     attempts_mode = "serial"
     serial_context_char_limit = 1536
-    serial_plan_max_tokens = 2048
+    serial_plan_max_tokens = 384
     serial_aux_temperature = 0.2
 
     system_prompt = (
@@ -100,19 +96,40 @@ class CFG:
         'Use this tool to execute Python code. '
         'The environment is a stateful Jupyter notebook. '
         'You must use print() to output results. '
-        'Python safety: \n'
-        '- never compute huge integers directly. \n'
-        '- ALWAYS use modular pow(a, e, mod) for big exponents; NEVER call pow(a, huge_e) without mod (or mod=None). Use sympy.factorint(n) when divisors matter. \n'
-        '- Never use while True (must have explicit bounds). \n'
-        '- Complexity budget: keep each Python call fast (<~2 seconds); start with small bounds and scale up only if needed; \n'
-        '- avoid large nested loops or wide scans—if a scan times out, reduce the bound or change the method (use modular/factorization/sieving). \n'
-        '- Use explicit namespaces for number theory helpers (math.gcd/math.lcm or sympy.gcd); do not use bare gcd/lcm names. \n'
-        '- Dict preview must use list(d.items())[:k] (never d[:k]). \n'
-        'Timeout-avoidance rules:\n'
-        '- Batch work: do NOT call python repeatedly for small steps; write one cell that computes all needed values.\n'
-        '- Before any scan/loop: start with a tiny bound (<=200 or <=2000), time it, then expand by x2/x3 only if fast.\n'
-        '- If you see "[ERROR] Execution timed out", do NOT rerun the same code; shrink bounds or add caching.\n'
-        '- If computing many ratios/candidates, use caching and early-break; avoid list comprehensions calling expensive funcs.\n'
+
+        # --- preview / slicing safety ---
+        'Preview helper available: use head(x,k) to safely preview dict/list/df. '
+        'Never write something[:k] unless you are sure it is a list/tuple; '
+        'for dict always use list(d.items())[:k] or head(d,k). '
+
+        # --- huge integer safety ---
+        'Do NOT do str(x), len(str(x)), or f"{x}" on huge integers. '
+        'Prefer x.bit_length(), x % mod, gcd, or modular arithmetic. '
+        'For large exponents, ALWAYS use pow(a, e, mod); NEVER call pow(a, huge_e) without mod. '
+        'If you need to print a huge integer, use p(x) or pint(x, mod=...) for safe summaries. '
+
+        # --- number theory / correctness ---
+        'When divisors or prime factors matter, use sympy.factorint(n). '
+        'Use explicit namespaces for number theory helpers '
+        '(e.g. math.gcd / math.lcm or sympy.gcd); do NOT use bare gcd/lcm names. '
+
+        # --- performance & safety rules ---
+        'Never use while True; all loops must have explicit bounds. '
+        'Complexity budget: keep each Python call fast (<~2 seconds). '
+        'Start with small bounds and scale up only if needed. '
+        'Avoid large nested loops or wide brute-force scans; '
+        'if a scan is slow, reduce bounds or switch methods '
+        '(e.g. modular arithmetic, factorization, sieving, caching). '
+
+        # --- timeout avoidance ---
+        'Batch work: do NOT call python repeatedly for small steps; '
+        'write one cell that computes all needed values. '
+        'Before any scan or loop, start with a tiny bound (<=200 or <=2000), '
+        'time it, then expand gradually (x2/x3) only if fast. '
+        'If execution times out, do NOT rerun the same code; '
+        'shrink bounds, add caching, or change the algorithm. '
+        'If computing many candidates or ratios, use caching, early-break, '
+        'and avoid list comprehensions that call expensive functions.'
     )
 
     preference_prompt = (
@@ -125,17 +142,37 @@ class CFG:
     planner_system_prompt = (
         'You are an expert IMO problem-solving PLANNER. '
         'Your job is to produce a short plan to guide another solver. '
+        'Strict rule: do NOT state any computed values for g(c), p, q, or the remainder. '
         'Do NOT solve the problem. Do NOT output any final answer or \\boxed{}. '
+        "Do NOT include any concluding sentence of the form 'therefore the answer is ...' or 'so remainder is ...'. "
+        'You may mention problem constants (e.g., 2025, 2025!, M) only as symbols.'
         'Do NOT write Python code. Output must be concise and actionable.'
     )
 
     planner_prompt = (
-        'Return EXACTLY two sections:\n'
+        'Output EXACTLY this template, no extra text:\n'
         'PLAN:\n'
-        '- 5-8 bullet steps; include what to verify with Python and what small scans/bounds to use.\n'
-        'PLAN_DIGEST:\n'
-        '- 1 bullet, <= 256 characters, capturing the unique strategy of this attempt.\n'
-        "Rules: no meta talk (no 'the user asks', no 'I will'), no \\boxed{}, no code."
+        '- ...\n'
+        '- ...\n'
+        '- ...\n'
+        '- ...\n'
+        '- ...\n'
+        'DIGEST:\n'
+        '- ...\n'
+        '<<<END>>>\n'
+        'Rules:\n'
+        '- PLAN has 5-8 bullets, each <=120 chars.\n '
+        '- Each PLAN bullet must be an action (verb-first), not a conclusion.\n '
+        '- DIGEST is exactly 1 bullet, <=256 chars.\n '
+        '- The line "<<<END>>>" must be on its own line (no other text on that line).\n '
+        '- "PLAN:" and "DIGEST:" must NOT be prefixed by "-" or "*". They must be standalone headers.\n '
+        '- Plan only: do NOT compute the final answer, do NOT include any final numeric result, do NOT write \\boxed{}.\n '
+        '- No explanations, no meta talk, no code.\n '
+        '- Do NOT include the words: analysis, final, assistant, user, rewrite, template.\n '    
+        '- Must include at least ONE new verification/search tactic not used in the immediately previous attempt '
+        '(e.g., widen a bound, change enumeration order, add an independent check, prove a missing lemma).\n'
+        '- Must explicitly list the most recent failure mode (from history) AND one concrete prevention rule '
+        '(imperative form, e.g., "Do not print huge ints; use bit_length/mod", "Do not assume X without a small-case check").'
     )
 
     planner_digest_max_chars = 256
@@ -177,7 +214,7 @@ class CFG:
     gpu_memory_utilization = 0.96
     temperature = 1.0
     min_p = 0.02
-    enable_error_penalty = True
+    enable_error_penalty = False
     error_penalty_lambda = 0.7
     debug = True
     debug_req = True
@@ -253,15 +290,112 @@ class AIMO3Sandbox:
         self._client.wait_for_ready(timeout=self._default_timeout)
         self._owns_kernel = True
 
-        self.execute(
-            'import math\n'
-            'import numpy\n'
-            'import sympy\n'
-            'import itertools\n'
-            'import collections\n'
-            'import mpmath\n'
-            'mpmath.mp.dps = 64\n'
-        )
+        self._helper_imports = """
+import math
+import numpy
+import sympy
+import itertools
+import collections
+import mpmath
+import sys
+import re
+
+mpmath.mp.dps = 64
+
+# ---- mitigate Python 3.11 huge-int str digit limit if available ----
+try:
+    if hasattr(sys, "set_int_max_str_digits"):
+        sys.set_int_max_str_digits(0)  # unlimited (best-effort)
+except Exception:
+    pass
+"""
+
+        self._helper_methods = """
+# ---- safe formatting helpers ----
+def _safe_int_str(n):
+    try:
+        return str(n)
+    except Exception:
+        try:
+            return f"<int bit_length={int(n.bit_length())}>"
+        except Exception:
+            return "<int>"
+
+def _safe_atom(x):
+    if isinstance(x, int):
+        # Avoid huge-int str; represent very large ints compactly
+        bl = x.bit_length()
+        if bl >= 4096:
+            return f"<int bit_length={bl}>"
+        return x
+    return x
+
+def head(x, k=10):
+    \"\"\"Safe preview: works for dict/list/tuple/set/pandas/polars objects.\"\"\"
+    try:
+        if isinstance(x, dict):
+            items = list(x.items())[:k]
+            return [(_safe_atom(a), _safe_atom(b)) for a, b in items]
+        if isinstance(x, (list, tuple)):
+            return [_safe_atom(v) for v in x[:k]]
+        if isinstance(x, set):
+            return [_safe_atom(v) for v in list(x)[:k]]
+        # pandas / polars DataFrame-like
+        if hasattr(x, "head"):
+            return x.head(k)
+    except Exception as _e:
+        return f"<head error: {_e}>"
+    # fallback: string (safe)
+    try:
+        s = repr(x)
+        return s[:2000] + ("..." if len(s) > 2000 else "")
+    except Exception:
+        return f"<{type(x).__name__}>"
+
+def pint(x, mod=None, name=None):
+    \"\"\"Safe summary for ints: avoids huge-int str.\"\"\"
+    if not isinstance(x, int):
+        print(f"{name + ': ' if name else ''}{type(x).__name__}")
+        return
+    bl = x.bit_length()
+    if mod is None:
+        msg = f"int(bit_length={bl})"
+    else:
+        try:
+            msg = f"int(bit_length={bl}, mod={mod} => {x % mod})"
+        except Exception:
+            msg = f"int(bit_length={bl}, mod={mod} => <error>)"
+    print(f"{name + ': ' if name else ''}{msg}")
+
+def p(x, name=None, k=10):
+    \"\"\"Safe print: dict/list previews via head(); ints via pint(); otherwise repr-trunc.\"\"\"
+    if isinstance(x, int):
+        pint(x, name=name)
+        return
+    if isinstance(x, dict):
+        try:
+            h = head(x, k)
+            print(f"{name + ': ' if name else ''}dict(len={len(x)}), head={h}")
+        except Exception as _e:
+            print(f"{name + ': ' if name else ''}dict(<error: {_e}>)")
+        return
+    if isinstance(x, (list, tuple, set)):
+        try:
+            h = head(x, k)
+            print(f"{name + ': ' if name else ''}{type(x).__name__}(len={len(x)}), head={h}")
+        except Exception as _e:
+            print(f"{name + ': ' if name else ''}{type(x).__name__}(<error: {_e}>)")
+        return
+    try:
+        s = repr(x)
+        if len(s) > 2000:
+            s = s[:2000] + "..."
+        print(f"{name + ': ' if name else ''}{s}")
+    except Exception:
+        print(f"{name + ': ' if name else ''}<{type(x).__name__}>")
+"""
+
+        self.execute([self._helper_imports, self._helper_methods])
 
     def _format_error(self, traceback: list[str]) -> str:
         clean_lines = []
@@ -272,9 +406,14 @@ class AIMO3Sandbox:
             clean_lines.append(clean_frame)
         return ''.join(clean_lines)
 
-    def execute(self, code: str, timeout: float | None = None) -> str:
+    def execute(self, code: str | Iterable[str], timeout: float | None = None) -> str:
         client = self._client
         effective_timeout = timeout or self._default_timeout
+
+        if isinstance(code, (list, tuple)):
+            code = "\n\n".join(
+                c.rstrip() for c in code if isinstance(c, str) and c.strip()
+            )
 
         msg_id = client.execute(
             code, 
@@ -354,16 +493,7 @@ class AIMO3Sandbox:
                 self._km.cleanup_resources()
 
     def reset(self):
-        self.execute(
-            '%reset -f\n'
-            'import math\n'
-            'import numpy\n'
-            'import sympy\n'
-            'import itertools\n'
-            'import collections\n'
-            'import mpmath\n'
-            'mpmath.mp.dps = 64\n'
-        )
+        self.execute(['%reset -f\n', self._helper_imports, self._helper_methods])
 
     def __del__(self):
         self.close()
@@ -532,90 +662,78 @@ class AIMO3Logger:
 
 
 class AIMO3Planner:
-    def __init__(self, cfg, template: AIMO3Template, client: OpenAI, logger: AIMO3Logger = None):
+    """
+    Robust planner for Harmony-format models:
+    - Collect token_ids and parse via harmony encoding to avoid 'assistantfinal' artifacts.
+    - Enforce PLAN/DIGEST template with at most one repair.
+    - Never return empty digest; never return non-bullet long paragraphs as plan.
+    """
+
+    def __init__(self, cfg, port: int = 8000):
         self.cfg = cfg
-        self.template = template
-        self.client = client
+        self.base_url = f"http://localhost:{port}/v1"
+        self.api_key = "sk-local"
+        self.client = OpenAI(base_url=self.base_url, api_key=self.api_key, timeout=self.cfg.session_timeout)
+
         self.encoding = load_harmony_encoding(HarmonyEncodingName.HARMONY_GPT_OSS)
         self.stop_token_ids = self.encoding.stop_tokens_for_assistant_actions()
 
-    def _sanitize(self, text: str) -> str:
-        if not text:
-            return ""
-        t = text.strip().replace("```", "")
-        lines = [ln.strip() for ln in t.splitlines() if ln.strip()]
-
-        bad = (
-            "the user asks", "user asks", "summarize", "output only",
-            "valid channels", "system_prompt", "tool_prompt", "preference_prompt",
-        )
-
-        out = []
-        for ln in lines:
-            low = ln.lower()
-            if any(b in low for b in bad):
-                continue
-            if "\\boxed" in ln or "boxed" in low:
-                continue
-            # keep only bullets / headers we expect
-            if low.startswith("plan:") or low.startswith("plan_digest:"):
-                out.append(ln)
-                continue
-            if re.match(r"^(\-|\*|•|\d+[\.\)])\s+", ln):
-                out.append(ln)
-                continue
-
-        return "\n".join(out).strip()
+    # ----------------- helpers -----------------
 
     def _build_history_block(self, history: list[dict]) -> str:
-        # program-side structured history (stable, no prompt pollution)
         if not history:
             return "ATTEMPT HISTORY: (none)\n"
-
+        keep = getattr(self.cfg, "planner_history_keep", 8)
+        maxc = getattr(self.cfg, "planner_digest_max_chars", 256)
         lines = ["ATTEMPT HISTORY (structured):"]
-        for r in history[-self.cfg.planner_history_keep:]:
-            digest = (r.get("PlanDigest") or "").replace("\n", " ").strip()
-            if len(digest) > self.cfg.planner_digest_max_chars:
-                digest = digest[: self.cfg.planner_digest_max_chars] + "..."
+        for r in history[-keep:]:
+            dig = (r.get("PlanDigest") or "").replace("\n", " ").strip()
+            if len(dig) > maxc:
+                dig = dig[:maxc] + "..."
             lines.append(
                 f"- Attempt {r.get('Attempt')}: "
                 f"Answer={r.get('Answer')}, Entropy={float(r.get('Entropy', 1e9)):.3f}, "
                 f"PyCalls={int(r.get('Python Calls', 0) or 0)}, PyErr={int(r.get('Python Errors', 0) or 0)}; "
-                f"PlanDigest={digest}"
+                f"PlanDigest={dig}"
             )
         return "\n".join(lines) + "\n"
 
-    def _gen_one_shot_text(
-        self,
-        user_text: str,
-        seed: int,
-        max_new_tokens: int,
-        system_prompt: str | None = None,
-        temperature: float | None = None,
-    ) -> str:
-        """single-turn generation (planner / summary etc). tools/sandbox disabled."""
-        sp = system_prompt or self.cfg.system_prompt
-        temp = self.cfg.serial_aux_temperature if temperature is None else float(temperature)
-        dummy_tool_cfg = ToolNamespaceConfig(name="python", description="", tools=[])
+    def _render_prompt_ids(self, system_prompt: str, user_text: str):
+        sys_content = (
+            SystemContent.new()
+            .with_model_identity(system_prompt)
+            .with_reasoning_effort(reasoning_effort=ReasoningEffort.LOW)
+            .with_tools(ToolNamespaceConfig(name="none", description="", tools=[]))
+        )
+        messages = [
+            Message.from_role_and_content(Role.SYSTEM, sys_content),
+            Message.from_role_and_content(Role.USER, user_text),
+        ]
+        conv = Conversation.from_messages(messages)
+        return self.encoding.render_conversation_for_completion(conv, Role.ASSISTANT)
 
-        messages = self.template.apply_chat_template(sp, user_text, dummy_tool_cfg)
-        conversation = Conversation.from_messages(messages)
-
-        prompt_ids = self.encoding.render_conversation_for_completion(conversation, Role.ASSISTANT)
-        # max_tokens = self.cfg.context_tokens - len(prompt_ids) - self.cfg.buffer_tokens
-        max_tokens = self.cfg.serial_plan_max_tokens
-        if max_tokens <= 0:
+    def _decode_from_token_ids(self, token_ids: list[int]) -> str:
+        if not token_ids:
             return ""
+        msgs = self.encoding.parse_messages_from_completion_tokens(token_ids, Role.ASSISTANT)
+        # concatenate all assistant text contents
+        parts = []
+        for m in msgs:
+            if not m.content:
+                continue
+            for c in m.content:
+                if hasattr(c, "text") and c.text:
+                    parts.append(c.text)
+        return "".join(parts).strip()
 
-        max_tokens = min(max_tokens, max_new_tokens)
-
+    def _stream_completion(self, system_prompt: str, user_text: str, seed: int, max_tokens: int, temperature: float):
+        prompt_ids = self._render_prompt_ids(system_prompt, user_text)
         stream = self.client.completions.create(
             model=self.cfg.served_model_name,
-            temperature=temp,
-            logprobs=None,
-            max_tokens=max_tokens,
+            temperature=float(temperature),
+            max_tokens=int(max_tokens),
             prompt=prompt_ids,
-            seed=seed,
+            seed=int(seed),
             stream=True,
             extra_body={
                 "min_p": self.cfg.min_p,
@@ -624,78 +742,183 @@ class AIMO3Planner:
             },
         )
 
-        chunks = []
+        token_buf = []
+        text_buf = []
         try:
             for chunk in stream:
-                txt = chunk.choices[0].text
-                if txt:
-                    chunks.append(txt)
+                # token_ids is the reliable path for harmony parsing
+                tids = getattr(chunk.choices[0], "token_ids", None)
+                if tids:
+                    token_buf.extend(tids)
+                t = chunk.choices[0].text
+                if t:
+                    text_buf.append(t)
         finally:
             stream.close()
 
-        return "".join(chunks).strip()
+        # raw text is only for debugging
+        raw_text = "".join(text_buf).strip()
+        parsed_text = self._decode_from_token_ids(token_buf)
+        return parsed_text, raw_text
 
-    def gen_plan(self, problem_text: str, history: list[dict], attempt_index: int) -> tuple[str, str, str]:
-        prompt = (
+    def _bulletize(self, text: str, max_lines: int = 8) -> str:
+        t = (text or "").strip()
+        if not t:
+            return ""
+        lines = [ln.strip() for ln in t.splitlines() if ln.strip()]
+        out = []
+        for ln in lines[:max_lines]:
+            ln = re.sub(r"^\s*(analysis|final|commentary)\s*", "", ln, flags=re.IGNORECASE).strip()
+            if not ln:
+                continue
+            if not ln.startswith(("-", "*", "•")):
+                ln = "- " + ln
+            out.append(ln)
+        return "\n".join(out).strip()
+
+    def _strip_answerish_lines(self, plan_part: str) -> str:
+        lines = plan_part.splitlines()
+        bad_kw = ("\\boxed", "remainder", "mod", "final answer", "=", "so each", "therefore", "template", "assistantfinal", "assistant")
+        out = []
+        for ln in lines:
+            low = ln.lower()
+            # 只过滤“答案型总结句”，保留正常数学等式的可能性会有误伤，但在 planner 场景利大于弊
+            if any(k in low for k in bad_kw) and any(ch.isdigit() for ch in ln):
+                continue
+            out.append(ln)
+        return "\n".join(out).strip()
+
+    def _extract_plan_and_digest(self, text: str) -> tuple[str, str]:
+        """
+        Accept headers with optional bullet prefixes:
+          PLAN: or - PLAN:
+          DIGEST: or - DIGEST:
+        """
+        t = (text or "").strip()
+        if not t:
+            return "", ""
+
+        # normalize <<<END>>> cut
+        t = re.split(r"(?m)^\s*<<<END>>>\s*$", t)[0].strip()
+
+        # find headers (allow optional bullet prefix)
+        plan_hdr = re.search(r"(?im)^\s*(?:[-*•]\s*)?PLAN\s*:\s*$", t)
+        dig_hdr = re.search(r"(?im)^\s*(?:[-*•]\s*)?DIGEST\s*:\s*$", t)
+
+        if plan_hdr and dig_hdr and dig_hdr.start() > plan_hdr.end():
+            plan_block = t[plan_hdr.end():dig_hdr.start()].strip()
+            dig_block = t[dig_hdr.end():].strip()
+        else:
+            # fallback: try split by substring if headers are inline
+            if "DIGEST:" in t:
+                left, right = t.split("DIGEST:", 1)
+                plan_block = left
+                dig_block = right
+                plan_block = re.sub(r"(?im)^\s*(?:[-*•]\s*)?PLAN\s*:\s*", "", plan_block).strip()
+            else:
+                plan_block, dig_block = t, ""
+
+        # keep only bullet lines for plan
+        plan_lines = []
+        for ln in plan_block.splitlines():
+            ln = ln.strip()
+            if ln.startswith(("-", "*", "•")):
+                plan_lines.append(ln)
+        plan_part = "\n".join(plan_lines).strip()
+
+        # digest: first bullet line
+        digest_line = ""
+        for ln in dig_block.splitlines():
+            ln = ln.strip()
+            if ln.startswith(("-", "*", "•")):
+                digest_line = ln.lstrip("-*• ").strip()
+                break
+
+        plan_part = re.sub(r"(?i)\b<<<END>>>\b", "", plan_part).strip()
+        digest_line = re.sub(r"(?i)\s*\b<<<END>>>\b\s*$", "", digest_line).strip()
+
+        return plan_part, digest_line
+
+    def _make_digest_fallback(self, plan_text: str) -> str:
+        maxc = getattr(self.cfg, "planner_digest_max_chars", 256)
+        lines = [ln.strip() for ln in (plan_text or "").splitlines() if ln.strip()]
+        bullets = [ln.lstrip("-*• ").strip() for ln in lines if ln.startswith(("-", "*", "•"))]
+        s = (bullets[0] if bullets else "").strip()
+        if not s:
+            s = "Try a different approach; enforce small scans + modular checks + caching."
+        return s[:maxc].strip()
+
+    def _is_good(self, plan_part: str, digest: str) -> bool:
+        if not plan_part:
+            return False
+        nbul = sum(1 for ln in plan_part.splitlines() if ln.strip().startswith(("-", "*", "•")))
+        if nbul < 5:
+            return False
+        return bool(digest.strip())
+
+    # ----------------- main API -----------------
+
+    def gen_plan(self, problem_text: str, history: list[dict], attempt_index: int):
+        # NOTE: planner should be short; do NOT set serial_plan_max_tokens too large.
+        max_tokens = min(int(self.cfg.serial_plan_max_tokens), 512)
+        temp = float(getattr(self.cfg, "serial_aux_temperature", 0.7))
+
+        user_prompt = (
             f"{self.cfg.planner_prompt}\n\n"
             f"PROBLEM:\n{problem_text}\n\n"
             f"{self._build_history_block(history)}\n"
-            f"Now produce PLAN and PLAN_DIGEST."
+            f"Output now."
         )
 
         seed = int((self.cfg.seed + 777) * (attempt_index + 1) ** 2)
-
-        raw0 = self._gen_one_shot_text(
-            prompt,
-            seed=seed,
-            max_new_tokens=self.cfg.serial_plan_max_tokens,
+        parsed_text, raw_text = self._stream_completion(
             system_prompt=self.cfg.planner_system_prompt,
-            temperature=self.cfg.serial_aux_temperature,
+            user_text=user_prompt,
+            seed=seed,
+            max_tokens=max_tokens,
+            temperature=temp,
         )
-        raw = raw0
 
-        if self.cfg.planner_sanitize:
-            raw = self._sanitize(raw0)
+        plan_part, digest = self._extract_plan_and_digest(parsed_text)
 
-            # fallback: keep raw (trim) rather than empty
-            if not raw.strip():
-                raw = raw0[: self.cfg.serial_context_char_limit].strip()
+        # one repair if bad
+        if not self._is_good(plan_part, digest):
+            repair_user = (
+                "FORMATTER TASK. Output ONLY the required template.\n"
+                "First line: PLAN:\n"
+                "Then 5-8 lines starting with '- '\n"
+                "Then: DIGEST:\n"
+                "Then exactly one '- ' line (<=256 chars)\n"
+                "Then: <<<END>>>\n\n"
+                f"PROBLEM:\n{problem_text}\n"
+            )
+            parsed_text2, raw_text2 = self._stream_completion(
+                system_prompt=self.cfg.planner_system_prompt,
+                user_text=repair_user,
+                seed=seed + 1,
+                max_tokens=256,
+                temperature=0.0,
+            )
+            parsed_text = parsed_text2 or parsed_text
+            raw_text = raw_text2 or raw_text
+            plan_part, digest = self._extract_plan_and_digest(parsed_text)
 
-        # parse sections
-        plan_part = raw
-        digest_part = ""
-        m = re.search(r"(?im)^\s*PLAN_DIGEST\s*:\s*$", raw)
-        if m:
-            plan_part = raw[: m.start()].strip()
-            digest_part = raw[m.end():].strip()
+        # plan_part = self._strip_answerish_lines(plan_part)
+        # program-side hard fallback (never return garbage paragraphs)
+        if not plan_part.strip():
+            plan_part = self._bulletize(parsed_text) or self._bulletize(problem_text)
+        if not digest.strip():
+            digest = self._make_digest_fallback(plan_part)
 
-        # remove PLAN: header if present
-        plan_part = re.sub(r"(?im)^\s*PLAN\s*:\s*$", "", plan_part).strip()
+        # truncate plan only (digest stays useful)
+        # plan_part = plan_part[: self.cfg.serial_context_char_limit].strip()
+        # if len(digest) > self.cfg.planner_digest_max_chars:
+        #     digest = digest[: self.cfg.planner_digest_max_chars].strip()
 
-        # keep plan short (avoid plan blow-up)
-        plan_part = plan_part[: self.cfg.serial_context_char_limit].strip()
-
-        # build digest fallback
-        digest_line = ""
-        if digest_part:
-            # first bullet line
-            for ln in digest_part.splitlines():
-                ln = ln.strip()
-                if ln.startswith(("-", "*", "•")):
-                    digest_line = ln.lstrip("-*• ").strip()
-                    break
-        if not digest_line:
-            # fallback: first plan bullet
-            for ln in plan_part.splitlines():
-                ln = ln.strip()
-                if ln.startswith(("-", "*", "•")):
-                    digest_line = ln.lstrip("-*• ").strip()
-                    break
-
-        if len(digest_line) > self.cfg.planner_digest_max_chars:
-            digest_line = digest_line[: self.cfg.planner_digest_max_chars].strip()
-
-        return plan_part, digest_line, raw0, raw
+        # return both parsed and raw for logging
+        plan_sanitized = plan_part  # already bullet-only; treat as sanitized
+        plan_raw = raw_text or parsed_text
+        return plan_part, digest, plan_raw, plan_sanitized
 
 
 class AIMO3Solver:
@@ -703,7 +926,7 @@ class AIMO3Solver:
     def __init__(self, cfg, port: int = 8000):
         self.cfg = cfg
         self.port = port
-        self.base_url = f'http://0.0.0.0:{port}/v1'
+        self.base_url = f'http://localhost:{port}/v1'
         self.api_key = 'sk-local'
         self.template = AIMO3Template()
         self.encoding = load_harmony_encoding(HarmonyEncodingName.HARMONY_GPT_OSS)
@@ -725,7 +948,7 @@ class AIMO3Solver:
         self.notebook_start_time = time.time()
         self.problems_remaining = 50
         self.logger = AIMO3Logger(cfg)
-        self.planner = AIMO3Planner(cfg, self.template, self.client, self.logger)
+        self.planner = AIMO3Planner(cfg)
 
     def _preload_model_weights(self) -> None:
         print(f'Loading model weights from {self.cfg.model_path} into OS Page Cache...')
