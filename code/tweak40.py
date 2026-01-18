@@ -1,8 +1,4 @@
-#!/usr/bin/env python
-# coding: utf-8
-
-get_ipython().run_line_magic('pip', "uninstall --yes 'keras' 'matplotlib' 'scikit-learn' 'tensorflow'")
-
+# %pip uninstall --yes 'keras' 'matplotlib' 'scikit-learn' 'tensorflow'
 
 import warnings
 warnings.simplefilter('ignore')
