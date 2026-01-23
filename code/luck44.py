@@ -85,19 +85,85 @@ import kaggle_evaluation.aimo_3_inference_server
 class CFG:
 
     system_prompt = (
-        'You are a world-class International Mathematical Olympiad (IMO) competitor. '
-        'The final answer must be a non-negative integer between 0 and 99999. '
-        'You must place the final integer answer inside \\boxed{}.'
+        'You are an elite mathematical problem solver with expertise at the International '
+        'Mathematical Olympiad (IMO) level. Your goal is to find the correct answer through '
+        'rigorous mathematical reasoning.\n\n'
+
+        '# Problem-Solving Approach:\n'
+        '1. UNDERSTAND: Carefully read and rephrase the problem in your own words. '
+        'Identify what is given, what needs to be found, and any constraints.\n'
+        '2. EXPLORE: Consider multiple solution strategies. Think about relevant theorems, '
+        'techniques, patterns, or analogous problems. Don\'t commit to one approach immediately.\n'
+        '3. PLAN: Select the most promising approach and outline key steps before executing.\n'
+        '4. EXECUTE: Work through your solution methodically. Show all reasoning steps clearly.\n'
+        '5. VERIFY: Check your answer by substituting back, testing edge cases, or using '
+        'alternative methods. Ensure logical consistency throughout.\n\n'
+
+        '# Mathematical Reasoning Principles:\n'
+        '- Break complex problems into smaller, manageable sub-problems\n'
+        '- Look for patterns, symmetries, and special cases that provide insight\n'
+        '- Use concrete examples to build intuition before generalizing\n'
+        '- Consider extreme cases and boundary conditions\n'
+        '- If stuck, try working backwards from the desired result\n'
+        '- Be willing to restart with a different approach if needed\n\n'
+
+        '# Verification Requirements:\n'
+        '- Cross-check arithmetic and algebraic manipulations\n'
+        '- Verify that your solution satisfies all problem constraints\n'
+        '- Test your answer with simple cases or special values when possible\n'
+        '- Ensure dimensional consistency and reasonableness of the result\n\n'
+
+        '# Output Format:\n'
+        'The final answer must be a non-negative integer between 0 and 99999.\n'
+        'Place your final numerical answer inside \\boxed{}, e.g., \\boxed{42}\n\n'
+
+        'Think step-by-step and show your complete reasoning process. Quality of reasoning '
+        'is as important as the final answer.'
     )
 
     tool_prompt = (
-        'Use this tool to execute Python code. '
-        'The environment is a stateful Jupyter notebook. '
-        'You must use print() to output results.'
+        'Use this tool to execute Python code for:\n'
+        '- Complex calculations that would be error-prone by hand\n'
+        '- Numerical verification of analytical results\n'
+        '- Generating examples or testing conjectures\n'
+        '- Visualizing problem structure when helpful\n'
+        '- Brute-force verification for small cases\n\n'
+
+        'The environment is a stateful Jupyter notebook. Code persists between executions.\n'
+        'Always use print() to display results. Write clear, well-commented code.\n\n'
+
+        'Remember: Code should support your mathematical reasoning, not replace it. '
+        'Explain what you\'re computing and why before running code.'
     )
 
     preference_prompt = (
-        'Use `math`, `numpy`,`sympy`,`itertools` and `collections` to solve the problem.'
+        'You have access to `math`, `numpy`, and `sympy` for:\n\n'
+
+        '# Symbolic Computation (sympy):\n'
+        '- Algebraic manipulation and simplification\n'
+        '- Solving equations and systems of equations\n'
+        '- Symbolic differentiation and integration\n'
+        '- Number theory functions (primes, divisors, modular arithmetic)\n'
+        '- Polynomial operations and factorization\n'
+        '- Working with mathematical expressions symbolically\n\n'
+
+        '# Numerical Computation (numpy):\n'
+        '- Array operations and linear algebra\n'
+        '- Efficient numerical calculations for large datasets\n'
+        '- Matrix operations and eigenvalue problems\n'
+        '- Statistical computations\n\n'
+
+        '# Mathematical Functions (math):\n'
+        '- Standard mathematical functions (trig, log, exp)\n'
+        '- Constants like pi and e\n'
+        '- Basic operations for single values\n\n'
+
+        'Best Practices:\n'
+        '- Use sympy for exact symbolic answers when possible\n'
+        '- Use numpy for numerical verification and large-scale computation\n'
+        '- Combine symbolic and numerical approaches: derive symbolically, verify numerically\n'
+        '- Document your computational strategy clearly\n'
+        '- Validate computational results against known cases or theoretical bounds'
     )
 
     served_model_name = 'gpt-oss'
@@ -109,17 +175,18 @@ class CFG:
     high_problem_timeout = 900
     base_problem_timeout = 300
 
-    notebook_limit = 17520
+    notebook_limit = 17400
     server_timeout = 180
 
     session_timeout = 960
-    jupyter_timeout = 10
-    sandbox_timeout = 5
+    jupyter_timeout = 6
+    sandbox_timeout = 3
 
     stream_interval = 200
     context_tokens = 65536
-    search_tokens = 1024
     buffer_tokens = 512
+    search_tokens = 32
+    top_logprobs = 5
     batch_size = 256
     early_stop = 4
     attempts = 8
@@ -211,10 +278,12 @@ class AIMO3Sandbox:
 
         self.execute(
             'import math\n'
+            'import numpy\n'
             'import sympy\n'
             'import itertools\n'
             'import collections\n'
-            'import numpy as np\n'
+            'import mpmath\n'
+            'mpmath.mp.dps = 64\n'
         )
 
     def _format_error(self, traceback: list[str]) -> str:
@@ -316,15 +385,15 @@ class AIMO3Sandbox:
 
     def reset(self):
 
-        self.execute('%reset -f')
-        self.execute('import gc; gc.collect()')
-
         self.execute(
+            '%reset -f\n'
             'import math\n'
+            'import numpy\n'
             'import sympy\n'
             'import itertools\n'
             'import collections\n'
-            'import numpy as np\n'
+            'import mpmath\n'
+            'mpmath.mp.dps = 64\n'
         )
 
     def __del__(self):
@@ -414,18 +483,6 @@ class AIMO3Tool:
 
         return [self._make_response(output, channel=message.channel)]
 
-    def close(self):
-
-        if self._jupyter_session is not None:
-            if self._owns_session:
-                self._jupyter_session.close()
-
-            self._jupyter_session = None
-
-    def __del__(self):
-
-        self.close()
-
 
 class AIMO3Solver:
 
@@ -514,6 +571,7 @@ class AIMO3Solver:
             '--stream-interval', 
             str(self.cfg.stream_interval), 
             '--async-scheduling', 
+            '--disable-log-stats', 
             '--enable-prefix-caching'
         ]
 
@@ -590,7 +648,53 @@ class AIMO3Solver:
             except ValueError:
                 pass
 
+        pattern = r'final\s+answer\s+is\s*([0-9,]+)'
+        matches = re.findall(pattern, text, re.IGNORECASE)
+
+        if matches:
+            try:
+                clean_value = matches[-1].replace(',', '')
+                value = int(clean_value)
+
+                if 0 <= value <= 99999:
+                    return value
+
+            except ValueError:
+                pass
+
         return None
+
+    def _compute_mean_entropy(self, logprobs_buffer: list) -> float:
+
+        if not logprobs_buffer:
+            return float('inf')
+
+        total_entropy = 0.0
+        token_count = 0
+
+        for top_logprobs_dict in logprobs_buffer:
+
+            if not isinstance(top_logprobs_dict, dict):
+                continue
+
+            if not top_logprobs_dict:
+                continue
+
+            token_entropy = 0.0
+
+            for token_str, log_prob in top_logprobs_dict.items():
+                prob = math.exp(log_prob)
+
+                if prob > 0:
+                    token_entropy -= prob * math.log2(prob)
+
+            total_entropy += token_entropy
+            token_count += 1
+
+        if token_count == 0:
+            return float('inf')
+
+        return total_entropy / token_count
 
     def _process_attempt(
         self, 
@@ -607,7 +711,8 @@ class AIMO3Solver:
                 'Answer': None, 
                 'Python Calls': 0, 
                 'Python Errors': 0, 
-                'Response Length': 0
+                'Response Length': 0, 
+                'Entropy': float('inf')
             }
 
         local_tool = None
@@ -616,6 +721,8 @@ class AIMO3Solver:
         python_errors = 0
         total_tokens = 0
         final_answer = None
+
+        logprobs_buffer = []
 
         attempt_seed = int(math.pow(self.cfg.seed + attempt_index, 2))
 
@@ -647,31 +754,20 @@ class AIMO3Solver:
                 if max_tokens < self.cfg.buffer_tokens:
                     break
 
-                # Create stream request with error handling
-                stream = None
-                try:
-                    stream = self.client.completions.create(
-                        model=self.cfg.served_model_name, 
-                        temperature=self.cfg.temperature, 
-                        max_tokens=max_tokens, 
-                        prompt=prompt_ids, 
-                        seed=attempt_seed, 
-                        stream=True, 
-                        extra_body={
-                            'min_p': self.cfg.min_p, 
-                            'stop_token_ids': self.stop_token_ids, 
-                            'return_token_ids': True
-                        },
-                        timeout=max(0,deadline - time.time()),
-                    )
-                except Exception as e:
-                    print(f"⚠️ Failed to create completion stream: {e}")
-                    # Break this iteration and try next one
-                    break
-
-                if stream is None:
-                    # Stream creation failed, skip this iteration
-                    continue
+                stream = self.client.completions.create(
+                    model=self.cfg.served_model_name, 
+                    temperature=self.cfg.temperature, 
+                    logprobs=self.cfg.top_logprobs, 
+                    max_tokens=max_tokens, 
+                    prompt=prompt_ids, 
+                    seed=attempt_seed, 
+                    stream=True, 
+                    extra_body={
+                        'min_p': self.cfg.min_p, 
+                        'stop_token_ids': self.stop_token_ids, 
+                        'return_token_ids': True
+                    }
+                )
 
                 try:
                     token_buffer = []
@@ -688,6 +784,12 @@ class AIMO3Solver:
                             token_buffer.extend(new_tokens)
                             total_tokens += len(new_tokens)
                             text_chunks.append(new_text)
+
+                            chunk_logprobs = chunk.choices[0].logprobs
+
+                            if chunk_logprobs is not None:
+                                if chunk_logprobs.top_logprobs:
+                                    logprobs_buffer.extend(chunk_logprobs.top_logprobs)
 
                         if '}' in new_text:
                             search_text = ''.join(text_chunks[-self.cfg.search_tokens:])
@@ -717,7 +819,6 @@ class AIMO3Solver:
 
                 if last_message.recipient == 'python':
                     python_calls += 1
-                    print("🐍 Executing Python code...")
                     tool_responses = local_tool.process_sync_plus(last_message)
 
                     response_text = tool_responses[0].content[0].text
@@ -731,60 +832,79 @@ class AIMO3Solver:
             python_errors += 1
 
         finally:
-            if local_tool is not None:
-                local_tool.close()
-
             if sandbox is not None:
                 sandbox.reset()
                 self.sandbox_pool.put(sandbox)
+
+        mean_entropy = self._compute_mean_entropy(logprobs_buffer)
 
         return {
             'Attempt': attempt_index + 1, 
             'Response Length': total_tokens, 
             'Python Calls': python_calls, 
             'Python Errors': python_errors, 
+            'Entropy': mean_entropy, 
             'Answer': final_answer
         }
 
     def _select_answer(self, detailed_results: list) -> int:
 
-        stats = defaultdict(lambda: {'votes': 0, 'calls': 0})
+        answer_weights = defaultdict(float)
+        answer_votes = defaultdict(int)
 
         for result in detailed_results:
             answer = result['Answer']
+            entropy = result['Entropy']
 
             if answer is not None:
-                stats[answer]['votes'] += 1
-                stats[answer]['calls'] += result['Python Calls']
+                weight = 1.0 / max(entropy, 1e-9)
 
-        sorted_stats = sorted(
-            stats.items(), 
-            key=lambda item: (item[1]['votes'], item[1]['calls']), 
-            reverse=True
-        )
+                answer_weights[answer] += weight
+                answer_votes[answer] += 1
+
+        scored_answers = []
+
+        for answer, total_weight in answer_weights.items():
+            scored_answers.append({
+                'answer': answer, 
+                'votes': answer_votes[answer], 
+                'score': total_weight
+            })
+
+        scored_answers.sort(key=lambda x: x['score'], reverse=True)
 
         vote_data = []
 
-        for answer, data in sorted_stats:
-            vote_data.append((answer, data['votes'], data['calls']))
+        for item in scored_answers:
+            vote_data.append((
+                item['answer'], 
+                item['votes'], 
+                item['score']
+            ))
 
-        vote_dataframe = pd.DataFrame(vote_data, columns=['Answer', 'Votes', 'Calls'])
+        vote_dataframe = pd.DataFrame(
+            vote_data, 
+            columns=['Answer', 'Votes', 'Score']
+        )
+
+        vote_dataframe = vote_dataframe.round({'Score': 3})
         display(vote_dataframe)
 
-        final_answer = sorted_stats[0][0]
-        final_votes = sorted_stats[0][1]['votes']
-        final_calls = sorted_stats[0][1]['calls']
+        if not scored_answers:
+            print('\nFinal Answer: 0\n')
+            return 0
 
-        print(f'\nFinal Result: {final_answer} | Votes: {final_votes} | Calls: {final_calls}\n')
+        final_answer = scored_answers[0]['answer']    
+        print(f'\nFinal Answer: {final_answer}\n')
 
         return final_answer
 
     def solve_problem(self, problem: str) -> int:
 
-        problem_start_time = time.time()
         print(f'\nProblem: {problem}\n')
 
         user_input = f'{problem} {self.cfg.preference_prompt}'
+
         elapsed_global = time.time() - self.notebook_start_time
         time_left = self.cfg.notebook_limit - elapsed_global
         problems_left_others = max(0, self.problems_remaining - 1)
@@ -848,19 +968,16 @@ class AIMO3Solver:
                     continue
 
         finally:
-            executor.shutdown(wait=False, cancel_futures=True)
-            self.problems_remaining = max(0, self.problems_remaining - 1)
+            stop_event.set()
+            executor.shutdown(wait=True, cancel_futures=True)
 
-        # print the inference time and budget
-        used_time = time.time() - problem_start_time
-        saved_time = max(0.0, budget - used_time)
-        print(f"[Budget]: {budget:.2f}s\n")
-        print(f"[inference] Took {used_time:.2f}s\n")
-        print(f"[Saved time]: {saved_time:.2f}s\n")
+            self.problems_remaining = max(0, self.problems_remaining - 1)
 
         if detailed_results:
             results_dataframe = pd.DataFrame(detailed_results)
+            results_dataframe['Entropy'] = results_dataframe['Entropy'].round(3)
             results_dataframe['Answer'] = results_dataframe['Answer'].astype('Int64')
+
             display(results_dataframe)
 
         if not valid_answers:
@@ -893,51 +1010,18 @@ solver = AIMO3Solver(CFG)
 
 
 def predict(id_: pl.DataFrame, question: pl.DataFrame, answer: Optional[pl.DataFrame] = None) -> pl.DataFrame:
-    global correct_count, total_count, predictions
 
-    question_id = id_.item(0)
+    id_value = id_.item(0)
     question_text = question.item(0)
 
-    print("------")
-    print(f"ID: {question_id}")
-    print(f"Question: {question_text[:200]}...")
+    gc.disable()
 
     final_answer = solver.solve_problem(question_text)
-    predictions[question_id] = final_answer
 
-    # Check accuracy if ground truth available
-    total_count += 1
-    if question_id in ground_truth:
-        gt = ground_truth[question_id]
-        is_correct = (final_answer == gt)
-        if is_correct:
-            correct_count += 1
-        status = "✅" if is_correct else "❌"
-        print(f"Answer: {final_answer} | Ground Truth: {gt} | {status}")
-        print(f"📊 Running Accuracy: {correct_count}/{total_count} ({100*correct_count/total_count:.1f}%)")
-    else:
-        print(f"Answer: {final_answer}")
+    gc.enable()
+    gc.collect()
 
-    print("------\n")
-
-    return pl.DataFrame({'id': question_id, 'answer': final_answer})
-
-
-# Load reference data and keep ground truth for accuracy calculation
-df = pd.read_csv(
-    "/kaggle/input/ai-mathematical-olympiad-progress-prize-3/reference.csv"
-)
-
-# Store ground truth answers for accuracy calculation (only in local mode)
-ground_truth = dict(zip(df["id"], df["answer"])) if "answer" in df.columns else {}
-
-# Create input file without answers
-df.drop("answer", axis=1, errors="ignore").to_csv("reference.csv", index=False)
-
-# Track predictions for accuracy calculation
-predictions = {}
-correct_count = 0
-total_count = 0
+    return pl.DataFrame({'id': id_value, 'answer': final_answer})
 
 
 inference_server = kaggle_evaluation.aimo_3_inference_server.AIMO3InferenceServer(predict)
@@ -946,8 +1030,7 @@ if os.getenv('KAGGLE_IS_COMPETITION_RERUN'):
     inference_server.serve()
 
 else:
-    inference_server.run_local_gateway(("reference.csv",))
-    #inference_server.run_local_gateway(
-    #    ('/kaggle/input/ai-mathematical-olympiad-progress-prize-3/test.csv',)
-    #)
+    inference_server.run_local_gateway(
+        ('/kaggle/input/ai-mathematical-olympiad-progress-prize-3/test.csv',)
+    )
 
