@@ -1,4 +1,8 @@
-# %pip uninstall --yes 'keras' 'matplotlib' 'scikit-learn' 'tensorflow'
+#!/usr/bin/env python
+# coding: utf-8
+
+get_ipython().run_line_magic('pip', "uninstall --yes 'keras' 'matplotlib' 'scikit-learn' 'tensorflow'")
+
 
 import os
 import sys
@@ -81,68 +85,103 @@ import kaggle_evaluation.aimo_3_inference_server
 class CFG:
 
     system_prompt = (
-        'You are a world-class International Mathematical Olympiad (IMO) competitor. '
-        'The final answer must be a non-negative integer between 0 and 99999. '
-        'You must place the final integer answer inside \\boxed{}.'
-        'Use \\boxed{} exactly once at the very end (never for intermediate results).'
-        'If you cannot finish within time, output your best verified result anyway as \\boxed{N}.'
+        'You are an elite mathematical problem solver with expertise at the International '
+        'Mathematical Olympiad (IMO) level. Your goal is to find the correct answer through '
+        'rigorous mathematical reasoning.\n\n'
+        # 'Use \\boxed{} exactly once at the very end (never for intermediate results).'
+        # 'If you cannot finish within time, output your best verified result anyway as \\boxed{N}.'
+
+        '# Problem-Solving Approach:\n'
+        '1. UNDERSTAND: Carefully read and rephrase the problem in your own words. '
+        'Identify what is given, what needs to be found, and any constraints.\n'
+        '2. EXPLORE: Consider multiple solution strategies. Think about relevant theorems, '
+        'techniques, patterns, or analogous problems. Don\'t commit to one approach immediately.\n'
+        '3. PLAN: Select the most promising approach and outline key steps before executing.\n'
+        '4. EXECUTE: Work through your solution methodically. Show all reasoning steps clearly.\n'
+        '5. VERIFY: Check your answer by substituting back, testing edge cases, or using '
+        'alternative methods. Ensure logical consistency throughout.\n\n'
+
+        '# Mathematical Reasoning Principles:\n'
+        '- Break complex problems into smaller, manageable sub-problems\n'
+        '- Look for patterns, symmetries, and special cases that provide insight\n'
+        '- Use concrete examples to build intuition before generalizing\n'
+        '- Consider extreme cases and boundary conditions\n'
+        '- If stuck, try working backwards from the desired result\n'
+        '- Be willing to restart with a different approach if needed\n\n'
+
+        '# Verification Requirements:\n'
+        '- Cross-check arithmetic and algebraic manipulations\n'
+        '- Verify that your solution satisfies all problem constraints\n'
+        '- Test your answer with simple cases or special values when possible\n'
+        '- Ensure dimensional consistency and reasonableness of the result\n\n'
+
+        '# Output Format:\n'
+        'The final answer must be a non-negative integer between 0 and 99999.\n'
+        'Place your final numerical answer inside \\boxed{}, e.g., \\boxed{42}\n\n'
+
+        'Think step-by-step and show your complete reasoning process. Quality of reasoning '
+        'is as important as the final answer.'
     )
 
     tool_prompt = (
-        'Use this tool to execute Python code. '
-        'The environment is a stateful Jupyter notebook. '
-        'You must use print() to output results. '
+        'Use this tool to execute Python code for:\n'
+        '- error-prone arithmetic, modular computations, factorization, and small-case scans\n'
+        '- numerical verification of analytical results\n'
+        '- verifying intermediate claims (sanity checks), not for replacing reasoning\n\n'
+        'Environment: stateful Jupyter. ALWAYS print() final results you need.\n'
+        'Batch work: prefer ONE Python call that computes all required quantities.\n\n'
 
+        'Python safety & correctness (MUST follow):\n'
         # --- preview / slicing safety ---
-        'Preview helper available: use head(x,k) to safely preview dict/list/df. '
-        'Never write something[:k] unless you are sure it is a list/tuple; '
-        'for dict always use list(d.items())[:k] or head(d,k). '
+        'A) Preview / slicing safety:\n'
+        '- Never write x[:k] unless x is a list/tuple/string.\n'
+        '- For dict: use list(d.items())[:k] or head(d,k) if available. Never d[:k].\n\n'
 
         # --- huge integer safety ---
-        'Do NOT do str(x), len(str(x)), or f"{x}" on huge integers. '
-        'Prefer x.bit_length(), x % mod, gcd, or modular arithmetic. '
-        'For large exponents, ALWAYS use pow(a, e, mod); NEVER call pow(a, huge_e) without mod. '
-        'If you need to print a huge integer, use p(x) or pint(x, mod=...) for safe summaries. '
+        'B) Huge integer safety (avoid int->str digit limit):\n'
+        '- NEVER do str(x), len(str(x)), f\'{x}\' when x might be huge.\n'
+        '- Use x.bit_length(), x % mod, math.gcd(a,b), or modular checks.\n'
+        '- For big exponents ALWAYS use pow(a, e, mod). Never pow(a, huge_e) without mod.\n'
+        '- If you need a safe summary: print(bit_length, mod residues, gcds), not the integer itself.\n\n'
 
         # --- number theory / correctness ---
-        'When divisors or prime factors matter, use sympy.factorint(n). '
-        'Use explicit namespaces for number theory helpers '
-        '(e.g. math.gcd / math.lcm or sympy.gcd); do NOT use bare gcd/lcm names. '
+        'C) Number theory tools:\n'
+        '- If divisors/primes matter: use sympy.factorint(n).\n'
+        '- Use explicit namespaces: math.gcd / math.lcm / sympy.factorint. Avoid bare gcd/lcm names.\n\n'
 
         # --- performance & safety rules ---
-        'Never use while True; all loops must have explicit bounds. '
-        'Complexity budget: keep each Python call fast (<~2 seconds). '
-        'Start with small bounds and scale up only if needed. '
-        'Avoid large nested loops or wide brute-force scans; '
-        'if a scan is slow, reduce bounds or switch methods '
-        '(e.g. modular arithmetic, factorization, sieving, caching). '
-
-        # --- timeout avoidance ---
-        'Batch work: do NOT call python repeatedly for small steps; '
-        'write one cell that computes all needed values. '
-        'Before any scan or loop, start with a tiny bound (<=200 or <=2000), '
-        'time it, then expand gradually (x2/x3) only if fast. '
-        'If execution times out, do NOT rerun the same code; '
-        'shrink bounds, add caching, or change the algorithm. '
-        'If computing many candidates or ratios, use caching, early-break, '
-        'and avoid list comprehensions that call expensive functions.'
+        'D) Performance / timeout avoidance:\n'
+        '- No `while True`. All loops must have explicit bounds.\n'
+        '- Start small range, time it, then scale by x2/x3/.. only if needed and fast.\n'
+        '- Avoid large nested loops; if slow, switch to math (mod/factorization/caching/early break).\n'
+        '- If a call times out: DO NOT rerun the same code; reduce bounds or change method.\n'
     )
 
     preference_prompt = (
-        'You have access to `math`, `numpy` and `sympy` to solve the problem.'
-        'Prefer verifiable approaches: reduce to modular arithmetic / factorization / small candidate sets. '
-        'If an argument depends on choosing the best among many integers, define a candidate set and a coverage strategy (prove a bound or do a bounded scan + verification).'
+        'You have access to math / numpy / sympy.\n'
+        'General strategy:\n'
+        '- Prefer verifiable approaches: modular arithmetic, factorization, bounds + small scans.\n'
+        '- If selecting the best among many integers: define a candidate set + coverage plan\n'
+        '  (prove a bound, or do bounded scan + verification).\n\n'
+        'Practical defaults:\n'
+        '- Modular arithmetic: use pow(a,e,mod) for huge exponents.\n'
+        '- Factorization/divisors: sympy.factorint.\n'
+        '- Exact rationals: sympy.Rational or fractions.Fraction when p/q matters.\n'
+        '- For problems involving large $M$, investigate if $f(M+c)$ follows a periodic pattern or depends only on $M \pmod d$. '
+        '  Always check divisors of $M$ and surrounding integers.\n'
+        '- For brute force: start small, add pruning/caching, and only expand if necessary.\n\n'
     )
 
     # --- NEW: planner (separate session) ---
     planner_system_prompt = (
-        'You are an expert IMO problem-solving PLANNER. '
-        'Your job is to produce a short plan to guide another solver. '
-        'Strict rule: do NOT state any computed values for g(c), p, q, or the remainder. '
-        'Do NOT solve the problem. Do NOT output any final answer or \\boxed{}. '
-        "Do NOT include any concluding sentence of the form 'therefore the answer is ...' or 'so remainder is ...'. "
-        'You may mention problem constants (e.g., 2025, 2025!, M) only as symbols.'
-        'Do NOT write Python code. Output must be concise and actionable.'
+        "You are a mathematical competition strategist. Given a problem and history, "
+        "generate {num_plans} distinct, executable strategies. "
+        "Each strategy must be separated by '---PLAN SEPARATOR---'.\n"
+        "Constraints:\n"
+        "1. Diversity: Each plan must use a different focus (e.g., Number Theory, Brute Force, Pattern Search, Symbolic Algebra).\n"
+        "2. Executability: Focus on high-level Python logic. DO NOT perform manual calculations.\n"
+        "3. Anti-Boundary: Do not attempt to compute huge numbers directly; use modular arithmetic.\n"
+        "Format: PLAN 1: [Short Title] \n[Steps] ... ---PLAN SEPARATOR--- PLAN 2: ..."
     )
 
     planner_prompt = (
@@ -175,11 +214,20 @@ class CFG:
 
     plan_enabled = False
     digest_enabled = False
+    attempt_tags = True         # 是否启用结构化标签
     plan_sanitize = True
     plan_context_limit = 1536
     plan_digest_limit = 256
     plan_max_tokens = 384
     plan_temperature = 0.2
+    plan_dedup_ratio = 0.88         # digest 相似度阈值（越高越严格）
+    plan_focus_rotate = True        # 是否给每个 plan 一个不同“侧重点提示”
+    plan_focus_list = [
+        "algebraic-derivation",     # 偏证明/推导
+        "small-scan",               # 偏小范围打表验证（<=200/2000）
+        "number-theory",            # 偏因子分解/整除结构
+        "mod-arithmetic",           # 偏模运算/同余验证
+    ]
 
     warmup_compile_cache = False
     compile_cache_src = "/kaggle/input/gpt-oss-120b-cache-compile/torch_compile_cache"
@@ -212,8 +260,9 @@ class CFG:
     search_tokens = 256
     top_logprobs = 5
     batch_size = 256
-    early_stop = 4
-    attempts = 8
+    early_stop = 3
+    attempts = 6
+    max_waves = 2
     workers = 16
     turns = 128
     seed = 42
@@ -222,13 +271,13 @@ class CFG:
     temperature = 1.0
     min_p = 0.02
 
-    select_policy = 'vote'  # 'entropy'
+    vote_policy = 'score'  # 'calls', 'score'
     penalty_err_enabled = False
     penalty_err_alpha = 0.1
 
     # --- NEW: vote bonus for "verification signal" ---
     # none | calls | ok_calls
-    bonus_py_call = "none"
+    bonus_py_call = 'none'
     bonus_py_alpha = 0.05           # 每个(有效)py call 的乘法奖励系数
     bonus_py_cap = 4                # 最多计入多少个 call（避免奖励刷太多）
 
@@ -240,7 +289,6 @@ class CFG:
 
 def _delete(name: str):
     if name is not None and name != "" and name in globals(): del globals()[name]
-
 
 def _fmt_time(seconds: float) -> str:
     s = int(round(max(0.0, seconds)))
@@ -642,13 +690,13 @@ class AIMO3Logger:
             final_log_content.append(f"**preference_prompt:**\n{self.format_markdown(self.cfg.preference_prompt)}\n")
             final_log_content.append(f"**planner_system_prompt:**\n{self.format_markdown(self.cfg.planner_system_prompt)}\n")
             final_log_content.append(f"**planner_prompt:**\n{self.format_markdown(self.cfg.planner_prompt)}\n")
-            final_log_content.append(f"**plan_enabled**: {self.cfg.plan_enabled}, "
-                                     f"**digest_enabled**: {self.cfg.digest_enabled}, "
-                                     f"**penalty_err_enabled**: {self.cfg.penalty_err_enabled}, "
-                                     f"**penalty_err_alpha**: {self.cfg.penalty_err_alpha}, "
-                                     f"**bonus_py_call**: {self.cfg.bonus_py_call}, "
-                                     f"**bonus_py_alpha**: {self.cfg.bonus_py_alpha}, "
-                                     f"**served_model_name: **{self.cfg.served_model_name}**\n")
+            final_log_content.append(f"**CFG** > plan_enabled: **{self.cfg.plan_enabled}**, "
+                                     f"digest_enabled: **{self.cfg.digest_enabled}**, "
+                                     f"penalty_err_enabled: **{self.cfg.penalty_err_enabled}**, "
+                                     f"penalty_err_alpha: **{self.cfg.penalty_err_alpha}**, "
+                                     f"bonus_py_call: **{self.cfg.bonus_py_call}**, "
+                                     f"bonus_py_alpha: **{self.cfg.bonus_py_alpha}**, "
+                                     f"served_model_name: **{self.cfg.served_model_name}**\n")
             final_log_content.extend(summary_lines)
             final_log_content.append("\n===\n")
 
@@ -1145,6 +1193,41 @@ class AIMO3Solver:
 
         return total_entropy / token_count
 
+    def _extract_tags(self, result: dict) -> list:
+        if not self.cfg.attempt_tags: return []
+        tags = []
+        code = result.get('Code', '')
+        err_msg = str(result.get('Error Log', ''))
+
+        # 1. 行为标签
+        if result.get('Python Calls', 0) > 0: tags.append("UsedPython")
+
+        # 2. 算法/函数标签 (通过正则快速扫描)
+        if "range(" in code and ("for " in code or "[" in code): tags.append("UsedLoop")
+        # if re.search(r"range\(\s*\d{1,4}\s*\)", code) or re.search(r"range\(\s*\d{1,4}\s*,\s*\d{1,4}", code): tags.append("UsedBruteForceSmall")
+        if re.search(r'range\(\s*(?:1,)?\s*(?:[1-9]|[1-4][0-9]|50)\s*\)', code): tags.append("UsedBruteForceSmall")
+        if "factorint" in code or "primefactors" in code: tags.append("UsedFactorint")
+        if "pow(" in code and "," in code and code.count(",") >= 2: tags.append("UsedModPow")
+        if re.search(r"\bgcd\s*\(", code) or "math.gcd" in code: tags.append("UsedGCD")
+        if "itertools" in code: tags.append("UsedItertools")
+        if "sympy" in code: tags.append("UsedSympy")
+
+        # 3. 错误标签
+        if result.get('Python Errors', 0) > 0:
+            if "Timeout" in err_msg or "TimeLimit" in err_msg: tags.append("TimedOut")
+            elif "KeyError: slice(None" in err_msg or "slice(None" in err_msg: tags.append("SliceDict")
+            elif "KeyError" in err_msg: tags.append("KeyError")
+            elif "OverflowError" in err_msg: tags.append("Overflow")
+            elif "RecursionError" in err_msg: tags.append("RecursionDepth")
+            elif "Exceeds the limit for integer string conversion" in err_msg: tags.append("IntStrLimit")
+            else: tags.append("OtherPyError")
+
+        # 4. 结果标签
+        if result.get('Answer') is not None: tags.append("FoundAnswer")
+        else: tags.append("NoAnswer")
+
+        return tags
+
     def _process_attempt(
         self, 
         problem: str, 
@@ -1321,17 +1404,20 @@ class AIMO3Solver:
                     tool_responses = local_tool.process_sync_plus(last_message)
                     response_text = tool_responses[0].content[0].text
 
+                    has_error = response_text.startswith('[ERROR]') or 'Traceback' in response_text or 'Error:' in response_text
+
                     if self.cfg.debug:
                         code_content = last_message.content[0].text
                         attempt_log.append(f"### Turn {turn_i} - Python Call:")
                         attempt_log.append(f"```python\n{code_content}\n```\n")
 
-                        attempt_log.append(f"### Turn {turn_i} - Python Output:")
+                        emoji_error = '❌' if has_error else ''
+                        attempt_log.append(f"### Turn {turn_i} {emoji_error} - Python Output:")
                         snippet_out = self.logger.get_debug_snippet(response_text)
                         formatted_out = self.logger.format_markdown(snippet_out, mode="text")
                         attempt_log.append(f"{formatted_out}\n")
 
-                    if response_text.startswith('[ERROR]') or 'Traceback' in response_text or 'Error:' in response_text:
+                    if has_error:
                         python_errors += 1
 
                     conversation.messages.extend(tool_responses)
@@ -1368,7 +1454,7 @@ class AIMO3Solver:
             'Time': attempt_time
         }
 
-    def _select_answer_by_vote(self, detailed_results: list) -> tuple[pd.DataFrame, int]:
+    def _select_answer_by_calls(self, detailed_results: list) -> tuple[pd.DataFrame, int]:
         stats = defaultdict(lambda: {'votes': 0, 'calls': 0})
         for result in detailed_results:
             answer = result['Answer']
@@ -1473,17 +1559,16 @@ class AIMO3Solver:
         return vote_dataframe, final_answer
 
     def _select_answer(self, detailed_results: list) -> tuple[pd.DataFrame, int]:
-        if self.cfg.select_policy == 'vote':
-            return self._select_answer_by_vote(detailed_results)
+        if self.cfg.vote_policy == 'calls':
+            return self._select_answer_by_calls(detailed_results)
         else:
             return self._select_answer_by_score(detailed_results)
 
     def solve_problem(self, problem: str, problem_id: str = "UNK") -> int:
         print(f'\nProblem: {problem}\n')
-        problem_start = time.time()
 
-        user_input = f'{problem} {self.cfg.preference_prompt}'
-
+        p_start = time.time()
+        user_input = f'{problem} {self.cfg.preference_prompt}'    
         elapsed_global = time.time() - self.notebook_start_time
         time_left = self.cfg.notebook_limit - elapsed_global
         problems_left_others = max(0, self.problems_remaining - 1)
@@ -1551,16 +1636,14 @@ class AIMO3Solver:
             cols = [c for c in results_dataframe.columns if not c in self.cfg.debug_cols]
             display(results_dataframe[cols])
 
-        problem_elapsed = time.time() - problem_start
-        problem_time = _fmt_time(problem_elapsed)
         if not valid_answers:
             print('\nResult: 0\n')
             vote_data, final_answer = pd.DataFrame(columns=['Answer', 'Votes', 'Score']), 0
         else:
             vote_data, final_answer = self._select_answer(detailed_results)
 
-        print(f"Problem ID: {problem_id}, spent time: {problem_time}, problems_remaining = {self.problems_remaining}")
-        self.logger.write_debug_logs(detailed_results, vote_data, problem, problem_id, problem_time)
+        p_end = time.time()
+        self.logger.write_debug_logs(detailed_results, vote_data, problem, problem_id, _fmt_time(p_end - p_start))
         return final_answer
 
     def __del__(self):
@@ -1587,8 +1670,11 @@ def predict(id_: pl.DataFrame, question: pl.DataFrame, answer: Optional[pl.DataF
     id_value = id_.item(0)
     question_text = question.item(0)
     gc.disable()
+    p_start = time.time()
     final_answer = solver.solve_problem(question_text, problem_id=str(id_value))
-    predict_answers[id_value] = final_answer
+    p_end = time.time()
+    p_time = p_end - p_start
+    predict_answers[id_value] = {'id': id_value, 'answer': final_answer, 'time': p_time, 'time_str': _fmt_time(p_time)}
     gc.enable()
     gc.collect()
     return pl.DataFrame({'id': id_value, 'answer': final_answer})
@@ -1599,31 +1685,51 @@ def test():
     global predict_answers
 
     # test_csv = '/kaggle/input/ai-mathematical-olympiad-progress-prize-3/test.csv'
-    test_csv = '/kaggle/input/ai-mathematical-olympiad-progress-prize-3/reference.csv'
+    # test_csv = '/kaggle/input/ai-mathematical-olympiad-progress-prize-3/reference.csv'
+    test_csv = '/kaggle/input/aimo-p3-hard/easy2.csv'
     # test_csv = '/kaggle/input/aimo-p3-hard/test2.csv'
     # test_csv = '/kaggle/input/aimo-p3-hard/test3.csv'
     # test_csv = '/kaggle/input/aimo-p3-hard/p5.csv'
     # test_csv = '/kaggle/input/aimo-p3-hard/p10.csv'
 
+    t_start = time.time()
     inference_server.run_local_gateway((test_csv,))
+    t_end = time.time()
+    t_time = t_end - t_start
 
     df = pd.read_csv(test_csv)
     real_answers = dict(zip(df["id"], df["answer"])) if "answer" in df.columns else {}
     correct_count = 0
     total_count = 0
     # Check accuracy if ground truth available
-    for (id, predict_answer) in predict_answers:
+    for id in predict_answers:
+        pa = predict_answers[id]
         if id in real_answers:
             total_count += 1
             real_answer = real_answers[id]
-            is_correct = (predict_answer == real_answer)
+            is_correct = (pa['answer'] == real_answer)
             if is_correct:
                 correct_count += 1
             status = "✅" if is_correct else "❌"
-            print(f"Problem ID: {id} -- Predict Answer: {predict_answer} | Ground Truth: {real_answer} | {status}")
+            print(f"Problem {id}: ({pa['time_str']}) -- Predict Answer: {pa['answer']} | Ground Truth: {real_answer} | {status}")
         else:
-            print(f"Problem ID: {id} -- Predict Answer: {predict_answer}")
-    print(f"📊 Running Accuracy: {correct_count}/{total_count} ({100*correct_count/total_count:.1f}%)")
+            print(f"Problem {id}: ({pa['time_str']}) -- Predict Answer: {pa['answer']}")
+
+    df2 = pl.DataFrame(list(predict_answers.values()))
+    stats = df2.select([
+        pl.col("time").max().alias("max_time"),
+        pl.col("time").min().alias("min_time"),
+        pl.col("time").mean().alias("avg_time"),
+    ])
+
+    max_id = df2.filter(pl.col("time") == stats["max_time"][0]).select("id").item()
+    min_id = df2.filter(pl.col("time") == stats["min_time"][0]).select("id").item()
+
+    print(f"📊 Total {total_count} problems, ⏱️ total time {_fmt_time(t_time)}; "
+          f"Running Accuracy 🎯: {correct_count}/{total_count} ({100*correct_count/total_count:.1f}%)\n"
+          f"Max time: {_fmt_time(stats['max_time'][0])} (id={max_id}); "
+          f"Min time: {_fmt_time(stats['min_time'][0])} (id={min_id}); "
+          f"Avg time: {_fmt_time(stats['avg_time'][0])}\n")
 
 
 if os.getenv('KAGGLE_IS_COMPETITION_RERUN'):
@@ -1631,7 +1737,4 @@ if os.getenv('KAGGLE_IS_COMPETITION_RERUN'):
     inference_server.serve()
 else:
     test()
-
-global_spent = time.time() - solver.notebook_start_time
-print(f"Total {len(predict_answers)} problems finished in {_fmt_time(global_spent)}!")
 
