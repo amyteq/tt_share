@@ -1,0 +1,495 @@
+cfg:
+  system-prompt: 'You are an elite mathematical problem solver with expertise at the
+    International Mathematical Olympiad (IMO) level. Your goal is to find the correct
+    answer through rigorous mathematical reasoning.
+
+
+    # Problem-Solving Approach:
+
+    1. UNDERSTAND: Carefully read and rephrase the problem in your own words. Identify
+    what is given, what needs to be found, and any constraints.
+
+    2. EXPLORE: Consider multiple solution strategies. Think about relevant theorems,
+    techniques, patterns, or analogous problems. Don''t commit to one approach immediately.
+
+    3. PLAN: Select the most promising approach and outline key steps before executing.
+
+    4. EXECUTE: Work through your solution methodically. Show all reasoning steps
+    clearly.
+
+    5. VERIFY: Check your answer by substituting back, testing edge cases, or using
+    alternative methods. Ensure logical consistency throughout.
+
+
+    # Mathematical Reasoning Principles:
+
+    - Break complex problems into smaller, manageable sub-problems
+
+    - Look for patterns, symmetries, and special cases that provide insight
+
+    - Use concrete examples to build intuition before generalizing
+
+    - Consider extreme cases and boundary conditions
+
+    - If stuck, try working backwards from the desired result
+
+    - Be willing to restart with a different approach if needed
+
+
+    # Verification Requirements:
+
+    - Cross-check arithmetic and algebraic manipulations
+
+    - Verify that your solution satisfies all problem constraints
+
+    - Test your answer with simple cases or special values when possible
+
+    - Ensure dimensional consistency and reasonableness of the result
+
+
+    # Output Format:
+
+    The final answer must be a non-negative integer between 0 and 99999.
+
+    Place your final numerical answer inside \boxed{}, e.g., \boxed{42}
+
+
+    Think step-by-step and show your complete reasoning process. Quality of reasoning
+    is as important as the final answer.'
+  tool-prompt: 'Use this tool to execute Python code for:
+
+    - Complex calculations that would be error-prone by hand
+
+    - Numerical verification of analytical results
+
+    - Generating examples or testing conjectures
+
+    - Visualizing problem structure when helpful
+
+    - Brute-force verification for small cases
+
+
+    The environment is a stateful Jupyter notebook. Code persists between executions.
+
+    Always use print() to display results. Write clear, well-commented code.
+
+
+    Remember: Code should support your mathematical reasoning, not replace it. Explain
+    what you''re computing and why before running code.'
+  preference-prompt: 'You have access to `math`, `numpy`, and `sympy` for:
+
+
+    # Symbolic Computation (sympy):
+
+    - Algebraic manipulation and simplification
+
+    - Solving equations and systems of equations
+
+    - Symbolic differentiation and integration
+
+    - Number theory functions (primes, divisors, modular arithmetic)
+
+    - Polynomial operations and factorization
+
+    - Working with mathematical expressions symbolically
+
+
+    # Numerical Computation (numpy):
+
+    - Array operations and linear algebra
+
+    - Efficient numerical calculations for large datasets
+
+    - Matrix operations and eigenvalue problems
+
+    - Statistical computations
+
+
+    # Mathematical Functions (math):
+
+    - Standard mathematical functions (trig, log, exp)
+
+    - Constants like pi and e
+
+    - Basic operations for single values
+
+
+    Best Practices:
+
+    - Use sympy for exact symbolic answers when possible
+
+    - Use numpy for numerical verification and large-scale computation
+
+    - Combine symbolic and numerical approaches: derive symbolically, verify numerically
+
+    - Document your computational strategy clearly
+
+    - Validate computational results against known cases or theoretical bounds'
+  served-model-name: gpt-oss
+  model-path: /kaggle/input/gpt-oss-120b/transformers/default/1
+  kv-cache-dtype: fp8_e4m3
+  dtype: auto
+  high-problem-timeout: 900
+  base-problem-timeout: 300
+  notebook-limit: 17400
+  server-timeout: 180
+  session-timeout: 960
+  jupyter-timeout: 6
+  sandbox-timeout: 3
+  stream-interval: 200
+  context-tokens: 65536
+  buffer-tokens: 512
+  search-tokens: 32
+  top-logprobs: 5
+  batch-size: 256
+  early-stop: 4
+  attempts: 8
+  workers: 16
+  turns: 128
+  seed: 42
+  gpu-memory-utilization: 0.96
+  temperature: 1.0
+  min-p: 0.02
+  ast-fix-slice: true
+  ast-add-cache: false
+  ast-fix-print: true
+  debug: true
+  debug-req: true
+  debug-req-full: 20
+  debug-resp: true
+  debug-limit: 3000
+  debug-cols:
+  - Log
+  - Plan
+  - PlanRaw
+  - PlanSanitized
+  - PlanDigest
+python-version: 3.12.12
+platform: Linux-6.6.113+-x86_64-with-glibc2.35
+time: ''
+run-at: '2026-01-30T03:25:27.298394+00:00'
+problems:
+- id: 111bbb
+  answer: 0
+  time: 0:16
+  attempts:
+  - idx: 3
+    response-length: 117
+    python-calls: 0
+    python-errors: 0
+    entropy: 0.8913368276556586
+    answer: 0
+    time: 0:15
+  - idx: 4
+    response-length: 132
+    python-calls: 0
+    python-errors: 0
+    entropy: 0.67811958830843
+    answer: 0
+    time: 0:15
+  - idx: 1
+    response-length: 134
+    python-calls: 0
+    python-errors: 0
+    entropy: 0.6509722802160773
+    answer: 0
+    time: 0:15
+  - idx: 6
+    response-length: 140
+    python-calls: 0
+    python-errors: 0
+    entropy: 0.6986910558892898
+    answer: 0
+    time: 0:15
+  votes:
+  - answer: 0
+    votes: 4
+    score: 5.564
+- id: 222ccc
+  answer: 0
+  time: 0:02
+  attempts:
+  - idx: 1
+    response-length: 139
+    python-calls: 0
+    python-errors: 0
+    entropy: 0.7061664168408711
+    answer: 0
+    time: 0:01
+  - idx: 2
+    response-length: 142
+    python-calls: 0
+    python-errors: 0
+    entropy: 0.6546060163573044
+    answer: 0
+    time: 0:01
+  - idx: 3
+    response-length: 154
+    python-calls: 0
+    python-errors: 0
+    entropy: 0.5119169794895764
+    answer: 0
+    time: 0:01
+  - idx: 8
+    response-length: 201
+    python-calls: 0
+    python-errors: 0
+    entropy: 0.6830832750111667
+    answer: 0
+    time: 0:02
+  votes:
+  - answer: 0
+    votes: 4
+    score: 6.361
+- id: 000aaa
+  answer: 0
+  time: 0:02
+  attempts:
+  - idx: 1
+    response-length: 81
+    python-calls: 0
+    python-errors: 0
+    entropy: 0.6694208235588093
+    answer: 0
+    time: 0:01
+  - idx: 3
+    response-length: 99
+    python-calls: 0
+    python-errors: 0
+    entropy: 0.63866759871523
+    answer: 0
+    time: 0:01
+  - idx: 4
+    response-length: 113
+    python-calls: 0
+    python-errors: 0
+    entropy: 0.6199662545717145
+    answer: 0
+    time: 0:01
+  - idx: 2
+    response-length: 144
+    python-calls: 0
+    python-errors: 0
+    entropy: 0.7589941476138822
+    answer: 0
+    time: 0:01
+  votes:
+  - answer: 0
+    votes: 4
+    score: 5.99
+- id: 111bbb
+  answer: 0
+  time: 0:02
+  attempts:
+  - idx: 5
+    response-length: 138
+    python-calls: 0
+    python-errors: 0
+    entropy: 0.6981955107848828
+    answer: 0
+    time: 0:01
+  - idx: 7
+    response-length: 141
+    python-calls: 0
+    python-errors: 0
+    entropy: 0.7130442298552605
+    answer: 0
+    time: 0:01
+  - idx: 4
+    response-length: 147
+    python-calls: 0
+    python-errors: 0
+    entropy: 0.633311511217949
+    answer: 0
+    time: 0:01
+  - idx: 3
+    response-length: 152
+    python-calls: 0
+    python-errors: 0
+    entropy: 0.7637645272546865
+    answer: 0
+    time: 0:01
+  votes:
+  - answer: 0
+    votes: 4
+    score: 5.723
+- id: 000aaa
+  answer: 0
+  time: 0:02
+  attempts:
+  - idx: 3
+    response-length: 95
+    python-calls: 0
+    python-errors: 0
+    entropy: 0.6655380934312581
+    answer: 0
+    time: 0:01
+  - idx: 4
+    response-length: 114
+    python-calls: 0
+    python-errors: 0
+    entropy: 0.628503812331632
+    answer: 0
+    time: 0:01
+  - idx: 1
+    response-length: 117
+    python-calls: 0
+    python-errors: 0
+    entropy: 0.6989138935277287
+    answer: 0
+    time: 0:01
+  - idx: 8
+    response-length: 125
+    python-calls: 0
+    python-errors: 0
+    entropy: 0.8337097860595017
+    answer: 0
+    time: 0:01
+  votes:
+  - answer: 0
+    votes: 4
+    score: 5.724
+- id: 222ccc
+  answer: 0
+  time: 0:02
+  attempts:
+  - idx: 3
+    response-length: 154
+    python-calls: 0
+    python-errors: 0
+    entropy: 0.5548075571749274
+    answer: 0
+    time: 0:01
+  - idx: 2
+    response-length: 157
+    python-calls: 0
+    python-errors: 0
+    entropy: 0.5245921799742804
+    answer: 0
+    time: 0:01
+  - idx: 6
+    response-length: 164
+    python-calls: 0
+    python-errors: 0
+    entropy: 0.6076291314961009
+    answer: 0
+    time: 0:02
+  - idx: 1
+    response-length: 201
+    python-calls: 0
+    python-errors: 0
+    entropy: 0.9087457263168985
+    answer: 0
+    time: 0:02
+  votes:
+  - answer: 0
+    votes: 4
+    score: 6.455
+- id: 222ccc
+  answer: 0
+  time: 0:02
+  attempts:
+  - idx: 2
+    response-length: 128
+    python-calls: 0
+    python-errors: 0
+    entropy: 0.5152003199076394
+    answer: 0
+    time: 0:01
+  - idx: 3
+    response-length: 179
+    python-calls: 0
+    python-errors: 0
+    entropy: 0.679189067576403
+    answer: 0
+    time: 0:02
+  - idx: 6
+    response-length: 184
+    python-calls: 0
+    python-errors: 0
+    entropy: 0.6749865209289154
+    answer: 0
+    time: 0:02
+  - idx: 1
+    response-length: 201
+    python-calls: 0
+    python-errors: 0
+    entropy: 0.9151051142419859
+    answer: 0
+    time: 0:02
+  votes:
+  - answer: 0
+    votes: 4
+    score: 5.988
+- id: 111bbb
+  answer: 0
+  time: 0:02
+  attempts:
+  - idx: 2
+    response-length: 135
+    python-calls: 0
+    python-errors: 0
+    entropy: 0.639393851761692
+    answer: 0
+    time: 0:01
+  - idx: 6
+    response-length: 139
+    python-calls: 0
+    python-errors: 0
+    entropy: 0.8142660792514131
+    answer: 0
+    time: 0:01
+  - idx: 4
+    response-length: 147
+    python-calls: 0
+    python-errors: 0
+    entropy: 0.7299621655930044
+    answer: 0
+    time: 0:01
+  - idx: 1
+    response-length: 150
+    python-calls: 0
+    python-errors: 0
+    entropy: 0.6990260264094745
+    answer: 0
+    time: 0:01
+  votes:
+  - answer: 0
+    votes: 4
+    score: 5.593
+- id: 000aaa
+  answer: 0
+  time: 0:01
+  attempts:
+  - idx: 7
+    response-length: 72
+    python-calls: 0
+    python-errors: 0
+    entropy: 0.6458624436190202
+    answer: 0
+    time: 0:01
+  - idx: 1
+    response-length: 117
+    python-calls: 0
+    python-errors: 0
+    entropy: 0.6941847833641496
+    answer: 0
+    time: 0:01
+  - idx: 4
+    response-length: 129
+    python-calls: 0
+    python-errors: 0
+    entropy: 0.7629878553479227
+    answer: 0
+    time: 0:01
+  - idx: 3
+    response-length: 139
+    python-calls: 0
+    python-errors: 0
+    entropy: 0.7416007042673675
+    answer: 0
+    time: 0:01
+  votes:
+  - answer: 0
+    votes: 4
+    score: 5.648
